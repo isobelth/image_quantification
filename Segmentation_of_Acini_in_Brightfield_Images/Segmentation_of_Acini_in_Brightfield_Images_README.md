@@ -25,4 +25,4 @@ Segmented regions are filtered based on solidity to exclude fragmented or non-co
 
 Labelled segmentations of acini are generated and optionally overlaid onto the original images for visual inspection.
 
-![Example_Quantification.png](Example_Quantification.png)
+![Example_Quantification.PNG](Example_Quantification.PNG)
