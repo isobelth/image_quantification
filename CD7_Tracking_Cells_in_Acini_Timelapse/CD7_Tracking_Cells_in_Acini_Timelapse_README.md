@@ -56,7 +56,7 @@ Try to get the segmentation as close as possible to the ground truth without ove
 
 ## Create linked labels in Trackmate (FIJI/ImageJ)
 
-1. The following parameters work well in Trackmate for MCF10A acini. Trackpy can be used instead if you want to keep everything in Python. However, Trackmate performs matching, taking into account shape and not just position.
+1. The following parameters work well in [Trackmate](https://imagej.net/plugins/trackmate/) for MCF10A acini. [Trackpy](https://pypi.org/project/trackpy/) can be used instead if you want to keep everything in Python. However, Trackmate performs matching, taking into account shape and not just position.
     - separation = 10
     - Kalman tracker:
     - initial search radius = 30
