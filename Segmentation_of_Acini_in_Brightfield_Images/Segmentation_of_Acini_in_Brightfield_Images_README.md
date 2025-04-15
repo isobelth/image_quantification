@@ -1,8 +1,4 @@
 # Identifying Acini in Grayscale Images
-
-Category: Grayscale
-On Github?: No
-
 The code contains two segmentation methods to identify and quantify acini (or any cellular aggregates) from 2D brightfield images:
 
 1. Intensity-based method
