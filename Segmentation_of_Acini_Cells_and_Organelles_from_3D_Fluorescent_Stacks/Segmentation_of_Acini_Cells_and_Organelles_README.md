@@ -1,11 +1,3 @@
-# Segmenting Cells and Acini
-
-Created by: Bel Taylor
-Created time: April 14, 2025 10:35 AM
-Category: 3D
-Last edited by: Bel Taylor
-Last updated time: April 14, 2025 10:36 AM
-
 # Create classifiers for membrane and nuclear segmentation (FIJI/ImageJ)
 
 **Background:**

@@ -1,8 +1,3 @@
-# Quantifying BM Breakdown
-
-Category: 3D, Fluorescent
-On Github?: No
-
 ## Quantifying Protein Polarisation in Acini
 
 This code was developed to quantify the distribution of a basement membrane protein (laminin) from the exterior of an acinar cellular aggregate and show loss of polarisation in certain experimental conditions. However, it can be used to quantify the distribution of any intensity image compared to a cellular aggregate.
@@ -25,6 +20,6 @@ The most extreme phenotypic differences can be characterised using the below pro
 
 ![images/image2.png](images/image2.png)
 
-1. Laminin intensity outside the identified acinar region is set to 0 to avoid the inclusion of laminin from adjacent acini in the analysis.
-2. The average laminin intensity at each distance from the acinus exterior is calculated, and the distance from the acinus exterior and average intensity are both normalised between 0 and 1 for each acinus.
+2. Laminin intensity outside the identified acinar region is set to 0 to avoid the inclusion of laminin from adjacent acini in the analysis.
+3. The average laminin intensity at each distance from the acinus exterior is calculated, and the distance from the acinus exterior and average intensity are both normalised between 0 and 1 for each acinus.
     1. We did not see laminin secretion into the basal ECM, so this region is not included in the analysis. However, a negative distance map could be incorporated to quantify basal secretion.
