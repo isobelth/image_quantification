@@ -1,10 +1,4 @@
-# CD7 Timelapse Cell Tracking
-
-Category: 3D, Timelapse
-On Github?: No
-
 # Create classifiers for nuclear segmentation (optional, FIJI/ImageJ)
-
 I’ve provided a [top](https://www.dropbox.com/scl/fi/vnfuavs44ptm1egoj4zw6/topscene2p5_classifier.classifier?rlkey=te5lwo3mhllnlw1zmwipyn0wn&dl=0) and [bottom](https://www.dropbox.com/scl/fi/lfo1l3r3k55j5a8h1a7ba/bottom_scene1p5_classifier.classifier?rlkey=jyu6uv9rg0g5l7jfsd7yvaa1o&dl=0) classifier that you can try. Ideally, the same classifier could be applied to all timelapse images. However, in theory, the different images may have different intensity characteristics, so you may need to create additional classifiers.
 
 **Background:**
@@ -67,3 +61,7 @@ Try to get the segmentation as close as possible to the ground truth without ove
 2. This will convert from unlinked labels to labels that are linked between frames (timesteps)
 
 ![images/image7.png](images/image7.png)
+
+## Quantify Motion (Python)
+Quantify individual cell motion and rotation compared to the (often drifting!) acinar COM
+![images/image8.png](images/image8.png)
