@@ -1,5 +1,5 @@
 # Create classifiers for nuclear segmentation (optional, FIJI/ImageJ)
-I’ve provided a [top](https://www.dropbox.com/scl/fi/vnfuavs44ptm1egoj4zw6/topscene2p5_classifier.classifier?rlkey=te5lwo3mhllnlw1zmwipyn0wn&dl=0) and [bottom](https://www.dropbox.com/scl/fi/lfo1l3r3k55j5a8h1a7ba/bottom_scene1p5_classifier.classifier?rlkey=jyu6uv9rg0g5l7jfsd7yvaa1o&dl=0) classifier that you can try. Ideally, the same classifier could be applied to all timelapse images. However, in theory, the different images may have different intensity characteristics, so you may need to create additional classifiers.
+I’ve provided a [top](https://github.com/isobelth/image_quantification/blob/main/CD7_Tracking_Cells_in_Acini_Timelapse/example_top_classifier.classifier) and [bottom](https://github.com/isobelth/image_quantification/blob/main/CD7_Tracking_Cells_in_Acini_Timelapse/example_bottom_classifer.classifier) classifier that you can try. Ideally, the same classifier could be applied to all timelapse images. However, in theory, the different images may have different intensity characteristics, so you may need to create additional classifiers.
 
 **Background:**
 
@@ -25,7 +25,7 @@ Try to get the segmentation as close as possible to the ground truth without ove
 
 ## Run the segmentation (FIJI/ImageJ)
 
-1. Use the FIJI/ImageJ [macro](https://www.dropbox.com/scl/fi/ehmhp9ngi2zfsztfw2cv3/labkit_split_and_segment.ijm?rlkey=m2pmoh75v4j5lak5jx6b2yjbm&dl=0) provided to run the segmentations
+1. Use the FIJI/ImageJ [macro](https://github.com/isobelth/image_quantification/blob/main/CD7_Tracking_Cells_in_Acini_Timelapse/Labkit_Split_and_Segment.ijm) provided to run the segmentations
 2. You can run the macro on a whole folder: it will search for all files of a certain type (e.g. tif), split them into a top and bottom section, and separate out the timesteps before segmenting.
 3. You will be left with 2*T top binary segmentations and 2*T bottom binary segmentations
 
@@ -33,13 +33,13 @@ Try to get the segmentation as close as possible to the ground truth without ove
 
 ## Stack the segmentations (FIJI/ImageJ)
 
-1. I’ve provided a [macro](https://www.dropbox.com/scl/fi/re93aerrdihswd5rm8btp/concatenate_files_in_two_folders_save.ijm?rlkey=fvpr1503h2e0yiect4dku03jp&dl=0) to stack the top and bottom halves back into a combined stack. This can be done for all timelapse images at once. You need to move all the resultant “top” segmentations to one folder and all the “bottom” segmentations to another folder. The concatenated segmentations will be saved in another folder.
+1. I’ve provided a [macro](https://github.com/isobelth/image_quantification/blob/main/CD7_Tracking_Cells_in_Acini_Timelapse/Concatenate_Top_and_Bottom_Stacks.ijm) to stack the top and bottom halves back into a combined stack. This can be done for all timelapse images at once. You need to move all the resultant “top” segmentations to one folder and all the “bottom” segmentations to another folder. The concatenated segmentations will be saved in another folder.
 
 ![images/image4.png](images/image4.png)
 
 ## Concatenate the files and create unlinked labels (Python)
 
-1. This [.ipynb](https://www.dropbox.com/scl/fi/vutlbte7m4azidmkdqero/labkit_tracking.ipynb?rlkey=cur3lqudpvjemvseanswlaahp&dl=0) file restacks the individual timepoints into large stacks
+1. This [.ipynb](https://github.com/isobelth/image_quantification/blob/main/CD7_Tracking_Cells_in_Acini_Timelapse/CD7_Tracking_Cells_in_Acini_Timelapse_README.md) file restacks the individual timepoints into large stacks
 2. Labels are created and cleaned, and a Watershed transform is applied to separate touching objects. It would be great if you could play around with parameters here to get the best match between labels and ground truth. This may require you changing the seed distance to more/less harshly split touching nuclei.
 
 ![images/image5.png](images/image5.png)
