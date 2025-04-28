@@ -62,6 +62,19 @@ Try to get the segmentation as close as possible to the ground truth without ove
 
 ![images/image7.png](images/image7.png)
 
+<p align="center">
+  <img src="images/segmentation2.gif" width="29%" />
+  <img src="images/segmentation1.gif" width="29%" />
+</p>
+
+<p align="center">
+  <img src="images/segmentation11.gif" width="19%" />
+  <img src="images/segmentation12.gif" width="19%" />
+  <img src="images/segmentation13.gif" width="19%" />
+  <img src="images/segmentation14.gif" width="19%" />
+  <img src="images/segmentation15.gif" width="19%" />
+</p>
+
 ## Quantify Motion (Python)
 Quantify individual cell motion and rotation compared to the (often drifting!) acinar COM
 ![images/image8.png](images/image8.png)
