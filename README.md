@@ -21,8 +21,8 @@ New tools and workflows will be added over time, covering a broader range of mic
 Please [reach out](https://www.linkedin.com/in/isobel-taylor-hearn-6766151b0/) if you have any questions, suggestions, or are interested in collaborating! 
 
 <p align="center">
-  <img src="images/segmentation1.gif" width="19%" />
+  <img src="images/segmentation1.gif" width="17.7%" />
   <img src="images/acinar_segmentation.gif" width="19%" />
   <img src="images/cell_segmentation.gif" width="19%" />
-  <img src="images/marcus_tracking.gif" width="19%" />
+  <img src="images/marcus_tracking.gif" width="26%" />
 </p>
