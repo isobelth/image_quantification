@@ -18,9 +18,9 @@ New tools and workflows will be added over time, covering a broader range of mic
 
 ## Collaboration and Contact
 
-Please [reach out](https://www.linkedin.com/in/isobel-taylor-hearn-6766151b0/) if you have any questions, suggestions, or are interested in collaborating! 
+👋 Please [reach out](https://www.linkedin.com/in/isobel-taylor-hearn-6766151b0/) if you have any questions, suggestions, or are interested in collaborating! 
 
-You can read more about my research [here](https://www.isobel-taylor-hearn.com/) 
+🔬 You can read more about my research [here](https://www.isobel-taylor-hearn.com/) 
 <p align="center">
   <img src="images/segmentation1.gif" width="17.7%" />
   <img src="images/acinar_segmentation.gif" width="19%" />
