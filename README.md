@@ -1,6 +1,7 @@
 # Image Quantification Tools
 
 This repository contains code to quantify cellular and tissue parameters from microscopy images.
+A .yaml file is included to recreate the python environment
 
 It includes scripts for segmentation and analysis of:
 
