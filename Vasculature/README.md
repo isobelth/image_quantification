@@ -14,3 +14,9 @@ Vasculature is segmented using a model classifier from [Hajal et al.](https://ww
 4. Volume and area are of the segmented region are calculated
 5. Signal intensity inside and outside the identified vasculature is calculated at t0 and t2 (t>0)
 5. Permeability is calculated and output (along with interrim) in a dataframe.
+
+
+## Minimal Segmentation File
+- This file allows you to perform segmentation and returns the t0 and t2 signal intensities, along with the segmented region
+- These images can be viewed on Napari, where you can take screenshots or record moview
+- To record movies, make sure you run the code on the nap-ij-record kernel
