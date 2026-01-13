@@ -21,6 +21,7 @@ results/
 *.zarr/
 
 # Common outputs
-data/
-outputs/
-results/
+**/output/
+**/outputs/
+**/results/
+**/data/
