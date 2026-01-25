@@ -1,28 +1,27 @@
-# Image files
-**/*.jpg
-**/*.jpeg
-**/*.png
-**/*.gif
-**/*.bmp
-**/*.tiff
-**/*.tif
-**/*.svg
-**/*.ico
-**/*.webp
-**/*.heic
-**/*.raw
+*.lif
+Vasculature/lif/
+data/
+outputs/
+results/
 
-# PDF files
-**/*.pdf
+.gif
+# Raw microscopy / big data
+*.lif
+*.czi
+*.nd2
+*.lsm
+*.oib
+*.oif
+*.tif
+*.tiff
+*.h5
+*.hdf5
 
-# Parquet files
-**/*.parquet
+# Zarr (directory-based)
+*.zarr/
 
-# Excel files
-**/*.xlsx
-**/*.xls
-**/*.xlsm
-**/*.xlsb
-
-# CSV files
-**/*.csv
+# Common outputs
+**/output/
+**/outputs/
+**/results/
+**/data/

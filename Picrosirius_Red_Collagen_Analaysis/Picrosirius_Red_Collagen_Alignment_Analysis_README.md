@@ -14,6 +14,10 @@
 
 ![images/image.png](images/image.png)
 
+**Duct Identification in Regions of Low Signal:** In many cases, collagen signal was not continuously present around the duct. In these cases, (hysterisis) thresholding was unable to identify the duct. Therefore morphpological dilation was applied in the direction of identiiied collagen to close the boundaries around the duct.
+
+![images/image.png](images/image3.png)
+
 **Collagen Type Analysis (Red:Green Ratio):** Using a HSV conversion, collagen is [defined](http://www.jms.periodikos.com.br/article/587cb4587f8c9d0d058b460c/pdf/jms-22-2-587cb4587f8c9d0d058b460c.pdf) as red (hue < 0.05 or > 0.95) or green (hue ∈ (0.25, 0.45)). A red:green ratio is computed within the ring mask to estimate collagen composition.
 
 - The hut of birefringent signal under polarised light correlates with fibre type and maturity. By converting RGB images to HSV, hue thresholds can be applied to distinguish collagen types.
