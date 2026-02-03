@@ -1,0 +1,663 @@
+#
+# A fatal error has been detected by the Java Runtime Environment:
+#
+#  Internal Error (os_windows_x86.cpp:146), pid=783972, tid=1120644
+#  guarantee(result == EXCEPTION_CONTINUE_EXECUTION) failed: Unexpected result from topLevelExceptionFilter
+#
+# JRE version: OpenJDK Runtime Environment Zulu11.84+17-CA (11.0.29+7) (build 11.0.29+7-LTS)
+# Java VM: OpenJDK 64-Bit Server VM Zulu11.84+17-CA (11.0.29+7-LTS, mixed mode, tiered, compressed oops, g1 gc, windows-amd64)
+# No core dump will be written. Minidumps are not enabled by default on client versions of Windows
+#
+# If you would like to submit a bug report, please visit:
+#   http://www.azul.com/support/
+# The crash happened outside the Java Virtual Machine in native code.
+# See problematic frame for where to report the bug.
+#
+
+---------------  S U M M A R Y ------------
+
+Command Line: --add-opens=java.base/java.lang=ALL-UNNAMED 
+
+Host: Intel(R) Xeon(R) w3-2425, 12 cores, 255G,  Windows 11 , 64 bit Build 26100 (10.0.26100.4768)
+Time: Tue Feb  3 15:05:30 2026 Romance Standard Time elapsed time: 3644.416703 seconds (0d 1h 0m 44s)
+
+---------------  T H R E A D  ---------------
+
+Current thread (0x000002407e3dc000):  JavaThread "Python Reference Queue" daemon [_thread_in_native, id=1120644, stack(0x000000ba8e690000,0x000000ba8e880000)]
+
+Stack: [0x000000ba8e690000,0x000000ba8e880000]
+Native frames: (J=compiled Java code, j=interpreted, Vv=VM code, C=native code)
+C  0x00007ff8dbeae11a
+C  0x00007ff8dc03d3c9
+C  0x00007ff8dc03eab8
+C  0x00007ff8dc03f147
+C  0x00007ff8dbad38fc
+C  0x00007ff8dbeadbdc
+C  [ntdll.dll+0x166fef]
+C  [ntdll.dll+0x74557]
+C  [ntdll.dll+0x16692e]
+C  0x00007ff90dcac06d
+C  0x00007ff90dcac0a2
+C  0x00007ff90dbc50b4
+C  0x00007ff90dbc7d63
+C  0x00007ff944f449a3
+C  [python311.dll+0x170a4a]  subtype_dealloc+0x3da  (typeobject.c:1433)
+C  [python311.dll+0x131a8c]  frame_dealloc+0x12c  (frameobject.c:883)
+C  [python311.dll+0x2a504b]  tb_dealloc+0xcb  (traceback.c:199)
+C  [python311.dll+0x2a5032]  tb_dealloc+0xb2  (traceback.c:198)
+C  [python311.dll+0x2a516a]  tb_clear+0x2a  (traceback.c:215)
+C  [python311.dll+0x7ae51]  delete_garbage+0xe1  (gcmodule.c:1014)
+C  [python311.dll+0x7b5f9]  gc_collect_main+0x5e9  (gcmodule.c:1291)
+C  [python311.dll+0x7bae5]  gc_collect_with_callback+0x45  (gcmodule.c:1401)
+C  [python311.dll+0x7cc7e]  PyGC_Collect+0x9e  (gcmodule.c:2086)
+C  0x00007ff944f893d7
+C  0x000002403fbdf777
+
+Java frames: (J=compiled Java code, j=interpreted, Vv=VM code)
+j  org.jpype.ref.JPypeReferenceNative.wake()V+0
+j  org.jpype.ref.JPypeReferenceQueue$Worker.run()V+42
+j  java.lang.Thread.run()V+11 java.base@11.0.29
+v  ~StubRoutines::call_stub
+
+---------------  P R O C E S S  ---------------
+
+Threads class SMR info:
+_java_thread_list=0x000002401e6d6790, length=28, elements={
+0x0000024036639800, 0x0000024036b8d000, 0x0000024036b8e000, 0x000002407ba3a800,
+0x000002407ba3b000, 0x000002407ba47000, 0x000002407ba52800, 0x000002407ba60800,
+0x000002407ba70800, 0x000002407bddb000, 0x000002407e3dc000, 0x0000024035d8d800,
+0x0000024035d8f000, 0x0000024035d8c800, 0x0000024035d91800, 0x0000024035d95000,
+0x000002402002b000, 0x000002402002c800, 0x0000024020033000, 0x000002402003a800,
+0x000002402003c000, 0x0000024089cdc000, 0x0000024089ca8800, 0x0000024089cb4800,
+0x0000024089cb5800, 0x0000024089cbd000, 0x0000024089cbb000, 0x0000024089cbd800
+}
+
+Java Threads: ( => current thread )
+  0x0000024036639800 JavaThread "Run$_main" [_thread_in_native, id=890968, stack(0x000000ba8aa00000,0x000000ba8abf0000)]
+  0x0000024036b8d000 JavaThread "Reference Handler" daemon [_thread_blocked, id=1123712, stack(0x000000ba8d140000,0x000000ba8d330000)]
+  0x0000024036b8e000 JavaThread "Finalizer" daemon [_thread_blocked, id=1114364, stack(0x000000ba8d330000,0x000000ba8d520000)]
+  0x000002407ba3a800 JavaThread "Signal Dispatcher" daemon [_thread_blocked, id=1121284, stack(0x000000ba8d520000,0x000000ba8d710000)]
+  0x000002407ba3b000 JavaThread "Attach Listener" daemon [_thread_blocked, id=1124124, stack(0x000000ba8d710000,0x000000ba8d900000)]
+  0x000002407ba47000 JavaThread "Service Thread" daemon [_thread_blocked, id=1123868, stack(0x000000ba8d900000,0x000000ba8daf0000)]
+  0x000002407ba52800 JavaThread "C2 CompilerThread0" daemon [_thread_blocked, id=1125836, stack(0x000000ba8daf0000,0x000000ba8dce0000)]
+  0x000002407ba60800 JavaThread "C1 CompilerThread0" daemon [_thread_blocked, id=1119424, stack(0x000000ba8dce0000,0x000000ba8ded0000)]
+  0x000002407ba70800 JavaThread "Sweeper thread" daemon [_thread_blocked, id=1118280, stack(0x000000ba8ded0000,0x000000ba8e0c0000)]
+  0x000002407bddb000 JavaThread "Common-Cleaner" daemon [_thread_blocked, id=1114104, stack(0x000000ba8e2b0000,0x000000ba8e4a0000)]
+=>0x000002407e3dc000 JavaThread "Python Reference Queue" daemon [_thread_in_native, id=1120644, stack(0x000000ba8e690000,0x000000ba8e880000)]
+  0x0000024035d8d800 JavaThread "Java2D Disposer" daemon [_thread_blocked, id=1126324, stack(0x000000ba903a0000,0x000000ba90590000)]
+  0x0000024035d8f000 JavaThread "AWT-Shutdown" [_thread_blocked, id=1126388, stack(0x000000ba90590000,0x000000ba90780000)]
+  0x0000024035d8c800 JavaThread "AWT-Windows" daemon [_thread_in_native, id=1121260, stack(0x000000ba90780000,0x000000ba90970000)]
+  0x0000024035d91800 JavaThread "AWT-EventQueue-0" [_thread_blocked, id=1127052, stack(0x000000ba8e880000,0x000000ba8ea70000)]
+  0x0000024035d95000 JavaThread "D3D Screen Updater" daemon [_thread_blocked, id=1123836, stack(0x000000ba91700000,0x000000ba918f0000)]
+  0x000002402002b000 JavaThread "pool-14-thread-7" [_thread_blocked, id=1122560, stack(0x000000ba96860000,0x000000ba96a50000)]
+  0x000002402002c800 JavaThread "pool-14-thread-23" [_thread_blocked, id=1120592, stack(0x000000ba97020000,0x000000ba97210000)]
+  0x0000024020033000 JavaThread "pool-14-thread-15" [_thread_blocked, id=944120, stack(0x000000ba97fa0000,0x000000ba98190000)]
+  0x000002402003a800 JavaThread "pool-14-thread-30" [_thread_blocked, id=1120612, stack(0x000000ba98d30000,0x000000ba98f20000)]
+  0x000002402003c000 JavaThread "pool-14-thread-42" [_thread_blocked, id=1124116, stack(0x000000ba99300000,0x000000ba994f0000)]
+  0x0000024089cdc000 JavaThread "pool-14-thread-69" [_thread_blocked, id=1121036, stack(0x000000ba9c940000,0x000000ba9cb30000)]
+  0x0000024089ca8800 JavaThread "pool-14-thread-85" [_thread_blocked, id=1122332, stack(0x000000ba9ec20000,0x000000ba9ee10000)]
+  0x0000024089cb4800 JavaThread "pool-14-thread-94" [_thread_blocked, id=1121564, stack(0x000000ba9ff80000,0x000000baa0170000)]
+  0x0000024089cb5800 JavaThread "pool-14-thread-96" [_thread_blocked, id=1109864, stack(0x000000baa0360000,0x000000baa0550000)]
+  0x0000024089cbd000 JavaThread "pool-14-thread-103" [_thread_blocked, id=1120924, stack(0x000000baa12e0000,0x000000baa14d0000)]
+  0x0000024089cbb000 JavaThread "pool-14-thread-64" [_thread_blocked, id=1128076, stack(0x000000baa14d0000,0x000000baa16c0000)]
+  0x0000024089cbd800 JavaThread "pool-14-thread-105" [_thread_blocked, id=1107512, stack(0x000000baa18b0000,0x000000baa1aa0000)]
+
+Other Threads:
+  0x0000024036b8c800 VMThread "VM Thread" [stack: 0x000000ba8cf50000,0x000000ba8d140000] [id=1120636]
+  0x00000240360ae000 WatcherThread [stack: 0x000000ba8e4a0000,0x000000ba8e690000] [id=1117936]
+  0x0000024036651800 GCTaskThread "GC Thread#0" [stack: 0x000000ba8b3f0000,0x000000ba8b5e0000] [id=1128084]
+  0x000002407e8e5000 GCTaskThread "GC Thread#1" [stack: 0x000000ba8ea70000,0x000000ba8ec60000] [id=1117536]
+  0x000002407e4d3000 GCTaskThread "GC Thread#2" [stack: 0x000000ba8ec60000,0x000000ba8ee50000] [id=1122472]
+  0x000002401e398800 GCTaskThread "GC Thread#3" [stack: 0x000000ba8ee50000,0x000000ba8f040000] [id=1122052]
+  0x000002407e0ae800 GCTaskThread "GC Thread#4" [stack: 0x000000ba8f040000,0x000000ba8f230000] [id=1117276]
+  0x000002407e0de800 GCTaskThread "GC Thread#5" [stack: 0x000000ba8f230000,0x000000ba8f420000] [id=1123728]
+  0x000002407c37c000 GCTaskThread "GC Thread#6" [stack: 0x000000ba8f420000,0x000000ba8f610000] [id=1124072]
+  0x000002407c37d000 GCTaskThread "GC Thread#7" [stack: 0x000000ba8f610000,0x000000ba8f800000] [id=1119564]
+  0x000002407dc53800 GCTaskThread "GC Thread#8" [stack: 0x000000ba8f800000,0x000000ba8f9f0000] [id=1118352]
+  0x000002407dc54000 GCTaskThread "GC Thread#9" [stack: 0x000000ba8f9f0000,0x000000ba8fbe0000] [id=1125332]
+  0x00000240360a3000 ConcurrentGCThread "G1 Main Marker" [stack: 0x000000ba8c790000,0x000000ba8c980000] [id=1128428]
+  0x00000240367af000 ConcurrentGCThread "G1 Conc#0" [stack: 0x000000ba8c980000,0x000000ba8cb70000] [id=1128436]
+  0x000002407e6e5800 ConcurrentGCThread "G1 Conc#1" [stack: 0x000000ba8fdd0000,0x000000ba8ffc0000] [id=1122404]
+  0x000002407e6e9000 ConcurrentGCThread "G1 Conc#2" [stack: 0x000000ba8ffc0000,0x000000ba901b0000] [id=1124280]
+  0x00000240360a1800 ConcurrentGCThread "G1 Refine#0" [stack: 0x000000ba8cb70000,0x000000ba8cd60000] [id=1127772]
+  0x000002407e6eb800 ConcurrentGCThread "G1 Refine#1" [stack: 0x000000ba901b0000,0x000000ba903a0000] [id=1120808]
+  0x0000024089dec000 ConcurrentGCThread "G1 Refine#2" [stack: 0x000000ba94390000,0x000000ba94580000] [id=1127044]
+  0x0000024089ded000 ConcurrentGCThread "G1 Refine#3" [stack: 0x000000ba94770000,0x000000ba94960000] [id=1127336]
+  0x0000024036b49800 ConcurrentGCThread "G1 Young RemSet Sampling" [stack: 0x000000ba8cd60000,0x000000ba8cf50000] [id=879964]
+
+Threads with active compile tasks:
+
+VM state:not at safepoint (normal execution)
+
+VM Mutex/Monitor currently owned by a thread: None
+
+Heap address: 0x0000000082000000, size: 30688 MB, Compressed Oops mode: Zero based, Oop shift amount: 3
+Narrow klass base: 0x0000000800000000, Narrow klass shift: 0
+Compressed class space size: 1073741824 Address: 0x0000000800000000
+
+Heap:
+ garbage-first heap   total 204800K, used 60822K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 2 young (8192K), 0 survivors (0K)
+ Metaspace       used 66785K, capacity 67599K, committed 67712K, reserved 1107968K
+  class space    used 8210K, capacity 8567K, committed 8576K, reserved 1048576K
+Heap Regions: E=young(eden), S=young(survivor), O=old, HS=humongous(starts), HC=humongous(continues), CS=collection set, F=free, A=archive, TAMS=top-at-mark-start (previous, next)
+|   0|0x0000000082000000, 0x00000000823fffe8, 0x0000000082400000| 99%| O|  |TAMS 0x0000000082000000, 0x0000000082000000| Untracked 
+|   1|0x0000000082400000, 0x0000000082800000, 0x0000000082800000|100%| O|  |TAMS 0x0000000082400000, 0x0000000082400000| Untracked 
+|   2|0x0000000082800000, 0x0000000082bffff8, 0x0000000082c00000| 99%| O|  |TAMS 0x0000000082800000, 0x0000000082800000| Untracked 
+|   3|0x0000000082c00000, 0x0000000082fffff8, 0x0000000083000000| 99%| O|  |TAMS 0x0000000082c00000, 0x0000000082c00000| Untracked 
+|   4|0x0000000083000000, 0x00000000833fffe8, 0x0000000083400000| 99%| O|  |TAMS 0x0000000083000000, 0x0000000083000000| Untracked 
+|   5|0x0000000083400000, 0x0000000083800000, 0x0000000083800000|100%| O|  |TAMS 0x0000000083400000, 0x0000000083400000| Untracked 
+|   6|0x0000000083800000, 0x0000000083c00000, 0x0000000083c00000|100%| O|  |TAMS 0x0000000083800000, 0x0000000083800000| Untracked 
+|   7|0x0000000083c00000, 0x0000000084000000, 0x0000000084000000|100%| O|  |TAMS 0x0000000083c00000, 0x0000000083c00000| Untracked 
+|   8|0x0000000084000000, 0x00000000843fffe0, 0x0000000084400000| 99%| O|  |TAMS 0x0000000084000000, 0x0000000084000000| Untracked 
+|   9|0x0000000084400000, 0x0000000084800000, 0x0000000084800000|100%| O|  |TAMS 0x0000000084400000, 0x0000000084400000| Untracked 
+|  10|0x0000000084800000, 0x0000000084bffff8, 0x0000000084c00000| 99%| O|  |TAMS 0x0000000084800000, 0x0000000084800000| Untracked 
+|  11|0x0000000084c00000, 0x0000000084ffffe8, 0x0000000085000000| 99%| O|  |TAMS 0x0000000084c00000, 0x0000000084c00000| Untracked 
+|  12|0x0000000085000000, 0x0000000085392798, 0x0000000085400000| 89%| O|  |TAMS 0x0000000085000000, 0x0000000085000000| Untracked 
+|  13|0x0000000085400000, 0x00000000857f3218, 0x0000000085800000| 98%| O|  |TAMS 0x0000000085400000, 0x0000000085400000| Untracked 
+|  14|0x0000000085800000, 0x0000000085be00c0, 0x0000000085c00000| 96%| O|  |TAMS 0x0000000085800000, 0x0000000085800000| Untracked 
+|  15|0x0000000085c00000, 0x0000000085c00000, 0x0000000086000000|  0%| F|  |TAMS 0x0000000085c00000, 0x0000000085c00000| Untracked 
+|  16|0x0000000086000000, 0x0000000086000000, 0x0000000086400000|  0%| F|  |TAMS 0x0000000086000000, 0x0000000086000000| Untracked 
+|  17|0x0000000086400000, 0x0000000086400000, 0x0000000086800000|  0%| F|  |TAMS 0x0000000086400000, 0x0000000086400000| Untracked 
+|  18|0x0000000086800000, 0x0000000086800000, 0x0000000086c00000|  0%| F|  |TAMS 0x0000000086800000, 0x0000000086800000| Untracked 
+|  19|0x0000000086c00000, 0x0000000086c00000, 0x0000000087000000|  0%| F|  |TAMS 0x0000000086c00000, 0x0000000086c00000| Untracked 
+|  20|0x0000000087000000, 0x0000000087000000, 0x0000000087400000|  0%| F|  |TAMS 0x0000000087000000, 0x0000000087000000| Untracked 
+|  21|0x0000000087400000, 0x0000000087400000, 0x0000000087800000|  0%| F|  |TAMS 0x0000000087400000, 0x0000000087400000| Untracked 
+|  22|0x0000000087800000, 0x0000000087800000, 0x0000000087c00000|  0%| F|  |TAMS 0x0000000087800000, 0x0000000087800000| Untracked 
+|  23|0x0000000087c00000, 0x0000000087c00000, 0x0000000088000000|  0%| F|  |TAMS 0x0000000087c00000, 0x0000000087c00000| Untracked 
+|  24|0x0000000088000000, 0x0000000088000000, 0x0000000088400000|  0%| F|  |TAMS 0x0000000088000000, 0x0000000088000000| Untracked 
+|  25|0x0000000088400000, 0x0000000088400000, 0x0000000088800000|  0%| F|  |TAMS 0x0000000088400000, 0x0000000088400000| Untracked 
+|  26|0x0000000088800000, 0x0000000088800000, 0x0000000088c00000|  0%| F|  |TAMS 0x0000000088800000, 0x0000000088800000| Untracked 
+|  27|0x0000000088c00000, 0x0000000088c00000, 0x0000000089000000|  0%| F|  |TAMS 0x0000000088c00000, 0x0000000088c00000| Untracked 
+|  28|0x0000000089000000, 0x0000000089000000, 0x0000000089400000|  0%| F|  |TAMS 0x0000000089000000, 0x0000000089000000| Untracked 
+|  29|0x0000000089400000, 0x0000000089400000, 0x0000000089800000|  0%| F|  |TAMS 0x0000000089400000, 0x0000000089400000| Untracked 
+|  30|0x0000000089800000, 0x0000000089800000, 0x0000000089c00000|  0%| F|  |TAMS 0x0000000089800000, 0x0000000089800000| Untracked 
+|  31|0x0000000089c00000, 0x0000000089c00000, 0x000000008a000000|  0%| F|  |TAMS 0x0000000089c00000, 0x0000000089c00000| Untracked 
+|  32|0x000000008a000000, 0x000000008a000000, 0x000000008a400000|  0%| F|  |TAMS 0x000000008a000000, 0x000000008a000000| Untracked 
+|  33|0x000000008a400000, 0x000000008a400000, 0x000000008a800000|  0%| F|  |TAMS 0x000000008a400000, 0x000000008a400000| Untracked 
+|  34|0x000000008a800000, 0x000000008a800000, 0x000000008ac00000|  0%| F|  |TAMS 0x000000008a800000, 0x000000008a800000| Untracked 
+|  35|0x000000008ac00000, 0x000000008ac00000, 0x000000008b000000|  0%| F|  |TAMS 0x000000008ac00000, 0x000000008ac00000| Untracked 
+|  36|0x000000008b000000, 0x000000008b000000, 0x000000008b400000|  0%| F|  |TAMS 0x000000008b000000, 0x000000008b000000| Untracked 
+|  37|0x000000008b400000, 0x000000008b400000, 0x000000008b800000|  0%| F|  |TAMS 0x000000008b400000, 0x000000008b400000| Untracked 
+|  38|0x000000008b800000, 0x000000008b800000, 0x000000008bc00000|  0%| F|  |TAMS 0x000000008b800000, 0x000000008b800000| Untracked 
+|  39|0x000000008bc00000, 0x000000008bc00000, 0x000000008c000000|  0%| F|  |TAMS 0x000000008bc00000, 0x000000008bc00000| Untracked 
+|  40|0x000000008c000000, 0x000000008c000000, 0x000000008c400000|  0%| F|  |TAMS 0x000000008c000000, 0x000000008c000000| Untracked 
+|  41|0x000000008c400000, 0x000000008c400000, 0x000000008c800000|  0%| F|  |TAMS 0x000000008c400000, 0x000000008c400000| Untracked 
+|  42|0x000000008c800000, 0x000000008c800000, 0x000000008cc00000|  0%| F|  |TAMS 0x000000008c800000, 0x000000008c800000| Untracked 
+|  43|0x000000008cc00000, 0x000000008cc00000, 0x000000008d000000|  0%| F|  |TAMS 0x000000008cc00000, 0x000000008cc00000| Untracked 
+|  44|0x000000008d000000, 0x000000008d000000, 0x000000008d400000|  0%| F|  |TAMS 0x000000008d000000, 0x000000008d000000| Untracked 
+|  45|0x000000008d400000, 0x000000008d400000, 0x000000008d800000|  0%| F|  |TAMS 0x000000008d400000, 0x000000008d400000| Untracked 
+|  46|0x000000008d800000, 0x000000008d800000, 0x000000008dc00000|  0%| F|  |TAMS 0x000000008d800000, 0x000000008d800000| Untracked 
+|  47|0x000000008dc00000, 0x000000008dc00000, 0x000000008e000000|  0%| F|  |TAMS 0x000000008dc00000, 0x000000008dc00000| Untracked 
+|  48|0x000000008e000000, 0x000000008e200020, 0x000000008e400000| 50%| E|  |TAMS 0x000000008e000000, 0x000000008e000000| Complete 
+|  49|0x000000008e400000, 0x000000008e7c18a0, 0x000000008e800000| 93%| E|  |TAMS 0x000000008e400000, 0x000000008e400000| Complete 
+
+Card table byte_map: [0x0000024053460000,0x0000024057050000] _byte_map_base: 0x0000024053050000
+
+Marking Bits (Prev, Next): (CMBitMap*) 0x0000024035c99bf0, (CMBitMap*) 0x0000024035c99bb8
+ Prev Bits: [0x0000024000000000, 0x000002401df80000)
+ Next Bits: [0x000002405ac40000, 0x0000024078bc0000)
+
+Polling page: 0x000002403fbb0000
+
+Metaspace:
+
+Usage:
+  Non-class:     57.65 MB capacity,    57.20 MB (>99%) used,   333.57 KB ( <1%) free+waste,   123.44 KB ( <1%) overhead. 
+      Class:      8.37 MB capacity,     8.02 MB ( 96%) used,   301.11 KB (  4%) free+waste,    55.38 KB ( <1%) overhead. 
+       Both:     66.01 MB capacity,    65.22 MB ( 99%) used,   634.68 KB ( <1%) free+waste,   178.81 KB ( <1%) overhead. 
+
+Virtual space:
+  Non-class space:       58.00 MB reserved,      57.75 MB (>99%) committed 
+      Class space:        1.00 GB reserved,       8.38 MB ( <1%) committed 
+             Both:        1.06 GB reserved,      66.13 MB (  6%) committed 
+
+Chunk freelists:
+   Non-Class:  40.00 KB
+       Class:  9.00 KB
+        Both:  49.00 KB
+
+MaxMetaspaceSize: 17179869184.00 GB
+CompressedClassSpaceSize: 1.00 GB
+Initial GC threshold: 20.80 MB
+Current GC threshold: 110.21 MB
+CDS: off
+
+CodeHeap 'non-profiled nmethods': size=120000Kb used=4624Kb max_used=4624Kb free=115376Kb
+ bounds [0x00000240476a0000, 0x0000024047b30000, 0x000002404ebd0000]
+CodeHeap 'profiled nmethods': size=120000Kb used=11813Kb max_used=11813Kb free=108186Kb
+ bounds [0x0000024040170000, 0x0000024040d00000, 0x00000240476a0000]
+CodeHeap 'non-nmethods': size=5760Kb used=1479Kb max_used=1514Kb free=4280Kb
+ bounds [0x000002403fbd0000, 0x000002403fe40000, 0x0000024040170000]
+ total_blobs=6039 nmethods=5223 adapters=726
+ compilation: enabled
+              stopped_count=0, restarted_count=0
+ full_count=0
+
+Compilation events (20 events):
+Event: 3486.326 Thread 0x000002407ba60800 5279       3       java.awt.EventDispatchThread$HierarchyEventFilter::acceptEvent (225 bytes)
+Event: 3486.327 Thread 0x000002407ba60800 nmethod 5279 0x0000024040cf2c90 code [0x0000024040cf2f20, 0x0000024040cf41a8]
+Event: 3486.327 Thread 0x000002407ba60800 5280       3       sun.awt.dnd.SunDragSourceContextPeer::checkEvent (29 bytes)
+Event: 3486.327 Thread 0x000002407ba60800 nmethod 5280 0x0000024040cf4490 code [0x0000024040cf4660, 0x0000024040cf4b18]
+Event: 3486.358 Thread 0x000002407ba60800 5281  s    3       sun.awt.windows.WDesktopProperties::setIntegerProperty (60 bytes)
+Event: 3486.359 Thread 0x000002407ba60800 nmethod 5281 0x0000024040cf4b90 code [0x0000024040cf4e00, 0x0000024040cf5848]
+Event: 3486.374 Thread 0x000002407ba60800 5282       3       sun.awt.AWTAccessor::getEventQueueAccessor (18 bytes)
+Event: 3486.374 Thread 0x000002407ba60800 nmethod 5282 0x0000024040cf5b90 code [0x0000024040cf5d60, 0x0000024040cf5f68]
+Event: 3486.464 Thread 0x000002407ba60800 5284       3       jdk.internal.misc.Unsafe::putFloat (8 bytes)
+Event: 3486.464 Thread 0x000002407ba60800 nmethod 5284 0x0000024040cf6090 code [0x0000024040cf6240, 0x0000024040cf6358]
+Event: 3486.582 Thread 0x000002407ba60800 5286       3       sun.java2d.pipe.RenderBuffer::clear (9 bytes)
+Event: 3486.582 Thread 0x000002407ba60800 nmethod 5286 0x0000024040cf6410 code [0x0000024040cf65c0, 0x0000024040cf66b8]
+Event: 3553.754 Thread 0x000002407ba60800 5287       3       sun.java2d.pipe.RenderQueue::ensureAlignment (28 bytes)
+Event: 3553.754 Thread 0x000002407ba60800 nmethod 5287 0x0000024040cf6790 code [0x0000024040cf6960, 0x0000024040cf6c18]
+Event: 3553.754 Thread 0x000002407ba60800 5288       3       sun.java2d.pipe.RenderQueue::ensureCapacityAndAlignment (13 bytes)
+Event: 3553.755 Thread 0x000002407ba60800 nmethod 5288 0x0000024040cf6d90 code [0x0000024040cf6f80, 0x0000024040cf74a8]
+Event: 3553.755 Thread 0x000002407ba60800 5290       3       sun.java2d.d3d.D3DRenderQueue::flushBuffer (46 bytes)
+Event: 3553.755 Thread 0x000002407ba60800 nmethod 5290 0x0000024040cf7710 code [0x0000024040cf7900, 0x0000024040cf7c98]
+Event: 3553.755 Thread 0x000002407ba60800 5289       3       sun.java2d.d3d.D3DRenderQueue::flushNow (6 bytes)
+Event: 3553.755 Thread 0x000002407ba60800 nmethod 5289 0x0000024040cf7e10 code [0x0000024040cf7fc0, 0x0000024040cf80e8]
+
+GC Heap History (20 events):
+Event: 375.610 GC heap before
+{Heap before GC invocations=99 (full 31):
+ garbage-first heap   total 1204224K, used 345076K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 2 young (8192K), 1 survivors (4096K)
+ Metaspace       used 66668K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.667 GC heap after
+{Heap after GC invocations=100 (full 32):
+ garbage-first heap   total 1024000K, used 278657K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 66668K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.710 GC heap before
+{Heap before GC invocations=100 (full 32):
+ garbage-first heap   total 1024000K, used 278657K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 0 survivors (0K)
+ Metaspace       used 66668K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.711 GC heap after
+{Heap after GC invocations=101 (full 32):
+ garbage-first heap   total 1024000K, used 278941K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 1 survivors (4096K)
+ Metaspace       used 66668K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.714 GC heap before
+{Heap before GC invocations=101 (full 32):
+ garbage-first heap   total 1024000K, used 287133K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 2 young (8192K), 1 survivors (4096K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.769 GC heap after
+{Heap after GC invocations=102 (full 33):
+ garbage-first heap   total 835584K, used 221563K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.791 GC heap before
+{Heap before GC invocations=102 (full 33):
+ garbage-first heap   total 835584K, used 221563K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 0 survivors (0K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.792 GC heap after
+{Heap after GC invocations=103 (full 33):
+ garbage-first heap   total 835584K, used 221614K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 1 survivors (4096K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.795 GC heap before
+{Heap before GC invocations=103 (full 33):
+ garbage-first heap   total 835584K, used 229806K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 2 young (8192K), 1 survivors (4096K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.850 GC heap after
+{Heap after GC invocations=104 (full 34):
+ garbage-first heap   total 630784K, used 164469K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.932 GC heap before
+{Heap before GC invocations=104 (full 34):
+ garbage-first heap   total 630784K, used 164469K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 0 survivors (0K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.933 GC heap after
+{Heap after GC invocations=105 (full 34):
+ garbage-first heap   total 630784K, used 164479K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 1 survivors (4096K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.936 GC heap before
+{Heap before GC invocations=105 (full 34):
+ garbage-first heap   total 630784K, used 172671K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 2 young (8192K), 1 survivors (4096K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 375.982 GC heap after
+{Heap after GC invocations=106 (full 35):
+ garbage-first heap   total 409600K, used 107376K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 66674K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8203K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 389.992 GC heap before
+{Heap before GC invocations=106 (full 35):
+ garbage-first heap   total 409600K, used 107376K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 0 survivors (0K)
+ Metaspace       used 66700K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8207K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 390.031 GC heap after
+{Heap after GC invocations=107 (full 36):
+ garbage-first heap   total 274432K, used 61116K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 66700K, capacity 67528K, committed 67712K, reserved 1107968K
+  class space    used 8207K, capacity 8565K, committed 8576K, reserved 1048576K
+}
+Event: 3553.714 GC heap before
+{Heap before GC invocations=107 (full 36):
+ garbage-first heap   total 274432K, used 65212K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 2 young (8192K), 0 survivors (0K)
+ Metaspace       used 66785K, capacity 67599K, committed 67712K, reserved 1107968K
+  class space    used 8210K, capacity 8567K, committed 8576K, reserved 1048576K
+}
+Event: 3553.753 GC heap after
+{Heap after GC invocations=108 (full 37):
+ garbage-first heap   total 233472K, used 60826K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 66785K, capacity 67599K, committed 67712K, reserved 1107968K
+  class space    used 8210K, capacity 8567K, committed 8576K, reserved 1048576K
+}
+Event: 3644.037 GC heap before
+{Heap before GC invocations=108 (full 37):
+ garbage-first heap   total 233472K, used 60826K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 1 young (4096K), 0 survivors (0K)
+ Metaspace       used 66785K, capacity 67599K, committed 67712K, reserved 1107968K
+  class space    used 8210K, capacity 8567K, committed 8576K, reserved 1048576K
+}
+Event: 3644.082 GC heap after
+{Heap after GC invocations=109 (full 38):
+ garbage-first heap   total 204800K, used 60822K [0x0000000082000000, 0x0000000800000000)
+  region size 4096K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 66785K, capacity 67599K, committed 67712K, reserved 1107968K
+  class space    used 8210K, capacity 8567K, committed 8576K, reserved 1048576K
+}
+
+Deoptimization events (20 events):
+Event: 3339.335 Thread 0x0000024035d8c800 Uncommon trap: trap_request=0xffffffd6 fr.pc=0x0000024047b19b48 relative=0x0000000000000768
+Event: 3339.335 Thread 0x0000024035d8c800 Uncommon trap: reason=array_check action=maybe_recompile pc=0x0000024047b19b48 method=java.util.ComparableTimSort.binarySort([Ljava/lang/Object;III)V @ 215 c2
+Event: 3339.335 Thread 0x0000024035d8c800 DEOPT PACKING pc=0x0000024047b19b48 sp=0x000000ba9096e0f0
+Event: 3339.335 Thread 0x0000024035d8c800 DEOPT UNPACKING pc=0x000002403fbd85af sp=0x000000ba9096e090 mode 2
+Event: 3339.335 Thread 0x0000024035d8c800 Uncommon trap: trap_request=0xffffffd6 fr.pc=0x0000024047b19d04 relative=0x0000000000000924
+Event: 3339.335 Thread 0x0000024035d8c800 Uncommon trap: reason=array_check action=maybe_recompile pc=0x0000024047b19d04 method=java.util.ComparableTimSort.binarySort([Ljava/lang/Object;III)V @ 183 c2
+Event: 3339.335 Thread 0x0000024035d8c800 DEOPT PACKING pc=0x0000024047b19d04 sp=0x000000ba9096e0f0
+Event: 3339.336 Thread 0x0000024035d8c800 DEOPT UNPACKING pc=0x000002403fbd85af sp=0x000000ba9096e090 mode 2
+Event: 3339.336 Thread 0x0000024035d8c800 Uncommon trap: trap_request=0xffffffbe fr.pc=0x0000024047b1724c relative=0x000000000000086c
+Event: 3339.336 Thread 0x0000024035d8c800 Uncommon trap: reason=profile_predicate action=maybe_recompile pc=0x0000024047b1724c method=java.util.ComparableTimSort.binarySort([Ljava/lang/Object;III)V @ 32 c2
+Event: 3339.336 Thread 0x0000024035d8c800 DEOPT PACKING pc=0x0000024047b1724c sp=0x000000ba9096e0f0
+Event: 3339.336 Thread 0x0000024035d8c800 DEOPT UNPACKING pc=0x000002403fbd85af sp=0x000000ba9096e0a8 mode 2
+Event: 3339.336 Thread 0x0000024035d8c800 Uncommon trap: trap_request=0xffffffd6 fr.pc=0x0000024047b19b48 relative=0x0000000000000768
+Event: 3339.336 Thread 0x0000024035d8c800 Uncommon trap: reason=array_check action=maybe_recompile pc=0x0000024047b19b48 method=java.util.ComparableTimSort.binarySort([Ljava/lang/Object;III)V @ 215 c2
+Event: 3339.336 Thread 0x0000024035d8c800 DEOPT PACKING pc=0x0000024047b19b48 sp=0x000000ba9096e0f0
+Event: 3339.336 Thread 0x0000024035d8c800 DEOPT UNPACKING pc=0x000002403fbd85af sp=0x000000ba9096e090 mode 2
+Event: 3339.635 Thread 0x0000024035d8c800 Uncommon trap: trap_request=0xffffffd6 fr.pc=0x0000024047994180 relative=0x0000000000000900
+Event: 3339.635 Thread 0x0000024035d8c800 Uncommon trap: reason=array_check action=maybe_recompile pc=0x0000024047994180 method=java.util.ComparableTimSort.binarySort([Ljava/lang/Object;III)V @ 193 c2
+Event: 3339.635 Thread 0x0000024035d8c800 DEOPT PACKING pc=0x0000024047994180 sp=0x000000ba9096e0f0
+Event: 3339.635 Thread 0x0000024035d8c800 DEOPT UNPACKING pc=0x000002403fbd85af sp=0x000000ba9096e090 mode 2
+
+Classes redefined (0 events):
+No events
+
+Internal exceptions (20 events):
+Event: 368.562 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x000000009700ec90}: class weka.core.converters.DatabaseLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x000000009700ec90) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.562 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000097010360}: class weka.core.converters.TextDirectoryLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.TextDirectoryLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000097010360) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.564 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x000000009705d5a0}: class weka.core.converters.DatabaseSaver cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseSaver and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x000000009705d5a0) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.599 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x00000000951968b0}: class weka.core.converters.DatabaseLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x00000000951968b0) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.600 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000095197a20}: class weka.core.converters.TextDirectoryLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.TextDirectoryLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000095197a20) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.600 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x00000000951e3e80}: class weka.core.converters.DatabaseLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x00000000951e3e80) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.601 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x00000000951e5550}: class weka.core.converters.TextDirectoryLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.TextDirectoryLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x00000000951e5550) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.601 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000095231d68}: class weka.core.converters.DatabaseSaver cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseSaver and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000095231d68) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.614 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000095384a78}: class weka.core.converters.DatabaseLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000095384a78) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.614 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000095385be8}: class weka.core.converters.TextDirectoryLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.TextDirectoryLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000095385be8) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.616 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x00000000953d2620}: class weka.core.converters.DatabaseLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x00000000953d2620) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.617 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x00000000953d3cf0}: class weka.core.converters.TextDirectoryLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.TextDirectoryLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x00000000953d3cf0) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.619 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000094c20ec0}: class weka.core.converters.DatabaseSaver cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseSaver and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000094c20ec0) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.627 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000094d82a60}: class weka.core.converters.DatabaseLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000094d82a60) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.627 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000094d83bd0}: class weka.core.converters.TextDirectoryLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.TextDirectoryLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000094d83bd0) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.629 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000094dd0118}: class weka.core.converters.DatabaseLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000094dd0118) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.629 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000094dd17e8}: class weka.core.converters.TextDirectoryLoader cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.TextDirectoryLoader and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000094dd17e8) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.630 Thread 0x0000024036639800 Exception <a 'java/lang/ClassCastException'{0x0000000094e1dff0}: class weka.core.converters.DatabaseSaver cannot be cast to class weka.core.converters.FileSourcedConverter (weka.core.converters.DatabaseSaver and weka.core.converters.FileSourcedConverter are in unnamed module of loader 'app')> (0x0000000094e1dff0) thrown at [s\src\hotspot\share\interpreter\interpreterRuntime.cpp, line 459]
+Event: 368.669 Thread 0x0000024036639800 Exception <a 'java/lang/NoSuchMethodError'{0x0000000094bf2418}: <clinit>> (0x0000000094bf2418) thrown at [s\src\hotspot\share\prims\jni.cpp, line 1372]
+Event: 368.723 Thread 0x0000024036639800 Exception <a 'java/lang/ClassNotFoundException'{0x000000009455b098}: sun/awt/windows/spi/awtLocalizationProvider> (0x000000009455b098) thrown at [s\src\hotspot\share\classfile\systemDictionary.cpp, line 233]
+
+Events (20 events):
+Event: 3339.741 Executing VM operation: RevokeBias
+Event: 3339.741 Executing VM operation: RevokeBias done
+Event: 3339.744 Executing VM operation: RevokeBias
+Event: 3339.744 Executing VM operation: RevokeBias done
+Event: 3339.747 Executing VM operation: RevokeBias
+Event: 3339.747 Executing VM operation: RevokeBias done
+Event: 3485.862 loading class java/awt/geom/RectIterator
+Event: 3485.862 loading class java/awt/geom/RectIterator done
+Event: 3485.924 Executing VM operation: RevokeBias
+Event: 3485.925 Executing VM operation: RevokeBias done
+Event: 3485.931 Executing VM operation: RevokeBias
+Event: 3485.931 Executing VM operation: RevokeBias done
+Event: 3486.466 Executing VM operation: RevokeBias
+Event: 3486.466 Executing VM operation: RevokeBias done
+Event: 3486.469 Executing VM operation: RevokeBias
+Event: 3486.469 Executing VM operation: RevokeBias done
+Event: 3553.714 Executing VM operation: G1CollectFull
+Event: 3553.753 Executing VM operation: G1CollectFull done
+Event: 3644.037 Executing VM operation: G1CollectFull
+Event: 3644.082 Executing VM operation: G1CollectFull done
+
+
+Dynamic libraries:
+0x00007ff694050000 - 0x00007ff69406c000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\python.exe
+0x00007ff9c2ec0000 - 0x00007ff9c3127000 	C:\Windows\SYSTEM32\ntdll.dll
+0x00007ff9c2810000 - 0x00007ff9c28d9000 	C:\Windows\System32\KERNEL32.DLL
+0x00007ff9c0850000 - 0x00007ff9c0c40000 	C:\Windows\System32\KERNELBASE.dll
+0x00007ff9c0290000 - 0x00007ff9c03db000 	C:\Windows\System32\ucrtbase.dll
+0x00007ff915a90000 - 0x00007ff9160c9000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\python311.dll
+0x00007ff9c0c50000 - 0x00007ff9c0cc4000 	C:\Windows\System32\WS2_32.dll
+0x00007ff9c19a0000 - 0x00007ff9c1ab8000 	C:\Windows\System32\RPCRT4.dll
+0x00007ff9c2d70000 - 0x00007ff9c2e24000 	C:\Windows\System32\ADVAPI32.dll
+0x00007ff9c0f90000 - 0x00007ff9c1039000 	C:\Windows\System32\msvcrt.dll
+0x00007ff9c2150000 - 0x00007ff9c21f6000 	C:\Windows\System32\sechost.dll
+0x00007ff986c60000 - 0x00007ff986c7e000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\VCRUNTIME140.dll
+0x00007ff9b8630000 - 0x00007ff9b863b000 	C:\Windows\SYSTEM32\VERSION.dll
+0x00007ff9bfee0000 - 0x00007ff9bff06000 	C:\Windows\SYSTEM32\bcrypt.dll
+0x00007ff9867f0000 - 0x00007ff98680a000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\zlib.dll
+0x00007ff992aa0000 - 0x00007ff992b3b000 	C:\Program Files\ESET\ESET Security\ebehmoni.dll
+0x00007ff9c0080000 - 0x00007ff9c0119000 	C:\Windows\System32\bcryptprimitives.dll
+0x000002402be90000 - 0x000002402be9f000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\python3.DLL
+0x00007ff980d70000 - 0x00007ff980dae000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\zmq\backend\cython\_zmq.cp311-win_amd64.pyd
+0x00007ff9761f0000 - 0x00007ff976268000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libzmq-mt-4_3_5.dll
+0x00007ff97c720000 - 0x00007ff97c778000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libsodium.dll
+0x00000000577b0000 - 0x0000000057812000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\gssapi64.dll
+0x00007ff9be4d0000 - 0x00007ff9be503000 	C:\Windows\SYSTEM32\IPHLPAPI.DLL
+0x00007ff975b10000 - 0x00007ff975b99000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\MSVCP140.dll
+0x00007ff994930000 - 0x00007ff99493c000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\VCRUNTIME140_1.dll
+0x0000000057680000 - 0x00000000577ac000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\krb5_64.dll
+0x00007ff9c0dc0000 - 0x00007ff9c0f85000 	C:\Windows\System32\USER32.dll
+0x00007ff9c0260000 - 0x00007ff9c0287000 	C:\Windows\System32\win32u.dll
+0x00007ff9c0d00000 - 0x00007ff9c0d2b000 	C:\Windows\System32\GDI32.dll
+0x00007ff9c0120000 - 0x00007ff9c0258000 	C:\Windows\System32\gdi32full.dll
+0x00007ff9c06e0000 - 0x00007ff9c0783000 	C:\Windows\System32\msvcp_win.dll
+0x00007ff9c10a0000 - 0x00007ff9c17ed000 	C:\Windows\System32\SHELL32.dll
+0x00007ff9c03e0000 - 0x00007ff9c0553000 	C:\Windows\System32\wintypes.dll
+0x00007ff9c1c50000 - 0x00007ff9c1fd5000 	C:\Windows\System32\combase.dll
+0x0000000057670000 - 0x0000000057678000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\comerr64.dll
+0x0000000057650000 - 0x0000000057663000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\k5sprt64.dll
+0x00007ff9bf4e0000 - 0x00007ff9bf4ec000 	C:\Windows\SYSTEM32\CRYPTBASE.DLL
+0x00007ff9be510000 - 0x00007ff9be636000 	C:\Windows\SYSTEM32\DNSAPI.dll
+0x00007ff9c1040000 - 0x00007ff9c106f000 	C:\Windows\System32\IMM32.DLL
+0x00007ff9c2360000 - 0x00007ff9c236a000 	C:\Windows\System32\NSI.dll
+0x00007ff986370000 - 0x00007ff986386000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_socket.pyd
+0x00007ff994750000 - 0x00007ff994759000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\select.pyd
+0x00007ff97f1d0000 - 0x00007ff97f1fe000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_ssl.pyd
+0x00007ff9c0560000 - 0x00007ff9c06d7000 	C:\Windows\System32\CRYPT32.dll
+0x00007ff918e10000 - 0x00007ff91952a000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libcrypto-3-x64.dll
+0x00007ff964140000 - 0x00007ff964287000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libssl-3-x64.dll
+0x00007ff9827a0000 - 0x00007ff9827b1000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_asyncio.pyd
+0x00007ff993010000 - 0x00007ff99301e000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_overlapped.pyd
+0x00007ff9bf2a0000 - 0x00007ff9bf30b000 	C:\Windows\system32\mswsock.dll
+0x00007ff993080000 - 0x00007ff99308b000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_bz2.pyd
+0x00007ff985800000 - 0x00007ff985816000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libbz2.dll
+0x00007ff993050000 - 0x00007ff99305d000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_lzma.pyd
+0x00007ff9806b0000 - 0x00007ff9806e2000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\liblzma.dll
+0x00007ff994000000 - 0x00007ff994009000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_queue.pyd
+0x00007ff992a50000 - 0x00007ff992a60000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_hashlib.pyd
+0x00007ff992740000 - 0x00007ff992748000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\tornado\speedups.pyd
+0x00007ff985630000 - 0x00007ff985651000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_ctypes.pyd
+0x00007ff9c17f0000 - 0x00007ff9c1990000 	C:\Windows\System32\ole32.dll
+0x00007ff9c2c80000 - 0x00007ff9c2d60000 	C:\Windows\System32\OLEAUT32.dll
+0x00007ff993fe0000 - 0x00007ff993feb000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\ffi-8.dll
+0x00007ff97dda0000 - 0x00007ff97ddea000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_decimal.pyd
+0x00007ff992620000 - 0x00007ff992628000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_uuid.pyd
+0x00007ff982470000 - 0x00007ff98248b000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\_sqlite3.pyd
+0x00007ff935be0000 - 0x00007ff935ef3000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\sqlite3.dll
+0x00007ff97e920000 - 0x00007ff97e932000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\pyexpat.pyd
+0x00007ff97c290000 - 0x00007ff97c2d5000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libexpat.dll
+0x00007ff95ccd0000 - 0x00007ff95cde8000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs\unicodedata.pyd
+0x00007ff97e830000 - 0x00007ff97e846000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\psutil\_psutil_windows.pyd
+0x00007ff9c1c40000 - 0x00007ff9c1c48000 	C:\Windows\System32\PSAPI.DLL
+0x00007ff9987a0000 - 0x00007ff9987ee000 	C:\Windows\SYSTEM32\pdh.dll
+0x00007ff9bfbf0000 - 0x00007ff9bfc4e000 	C:\Windows\SYSTEM32\POWRPROF.dll
+0x00007ff9bfbd0000 - 0x00007ff9bfbe4000 	C:\Windows\SYSTEM32\UMPDC.dll
+0x00007ff9bce10000 - 0x00007ff9bce26000 	C:\Windows\SYSTEM32\wtsapi32.dll
+0x00007ff9b9a30000 - 0x00007ff9b9a4f000 	C:\Windows\SYSTEM32\dhcpcsvc6.DLL
+0x00007ff9ba230000 - 0x00007ff9ba255000 	C:\Windows\SYSTEM32\dhcpcsvc.DLL
+0x00007ff98c210000 - 0x00007ff98c218000 	C:\Windows\system32\wshunix.dll
+0x00007ff9bed30000 - 0x00007ff9bed4b000 	C:\Windows\SYSTEM32\kernel.appcore.dll
+0x00007ff978570000 - 0x00007ff9785d8000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\debugpy\_vendored\pydevd\_pydevd_bundle\pydevd_cython.cp311-win_amd64.pyd
+0x00007ff923940000 - 0x00007ff923ce2000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\_core\_multiarray_umath.cp311-win_amd64.pyd
+0x00007ff9bcc50000 - 0x00007ff9bcc70000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libcblas.dll
+0x00007ff8dd940000 - 0x00007ff8df483000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\mkl_rt.2.dll
+0x00007ff9a7b50000 - 0x00007ff9a7b6e000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\linalg\_umath_linalg.cp311-win_amd64.pyd
+0x00007ff9a0210000 - 0x00007ff9a022f000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libblas.dll
+0x00007ff997dc0000 - 0x00007ff997df1000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\liblapack.dll
+0x00007ff8ce690000 - 0x00007ff8d0b91000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\mkl_intel_thread.2.dll
+0x00007ff8c0220000 - 0x00007ff8c4286000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\mkl_core.2.dll
+0x00007ff8b8220000 - 0x00007ff8bbfa1000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\mkl_avx512.2.dll
+0x00007ff8ed4f0000 - 0x00007ff8ee43b000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\mkl_vml_avx512.2.dll
+0x00007ff997750000 - 0x00007ff99777a000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libiomp5md.dll
+0x00007ff9702b0000 - 0x00007ff97035f000 	C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libomp.dll
+0x00007ff9947c0000 - 0x00007ff9947e6000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\matplotlib\_c_internal_utils.cp311-win_amd64.pyd
+0x00007ff9868a0000 - 0x00007ff98690a000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\PIL\_imaging.cp311-win_amd64.pyd
+0x00007ff9824f0000 - 0x00007ff98256e000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\tiff.dll
+0x00007ff969d30000 - 0x00007ff969ddc000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\jpeg8.dll
+0x00007ff993e30000 - 0x00007ff993e8d000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\openjp2.dll
+0x00007ff986190000 - 0x00007ff9861e7000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\zlib-ng2.dll
+0x00007ff9943b0000 - 0x00007ff9943e1000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\deflate.dll
+0x00007ff9739d0000 - 0x00007ff973a54000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\Lerc.dll
+0x00007ff9678b0000 - 0x00007ff967956000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\zstd.dll
+0x00007ff993d20000 - 0x00007ff993d6d000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\matplotlib\_path.cp311-win_amd64.pyd
+0x00007ff97a430000 - 0x00007ff97a488000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\matplotlib\_image.cp311-win_amd64.pyd
+0x00007ff97a1f0000 - 0x00007ff97a250000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\matplotlib\ft2font.cp311-win_amd64.pyd
+0x00007ff9661d0000 - 0x00007ff96627b000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\freetype.dll
+0x00007ff994070000 - 0x00007ff9940a5000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin\libpng16.dll
+0x00007ff992da0000 - 0x00007ff992dcc000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\kiwisolver\_cext.cp311-win_amd64.pyd
+0x00007ff98d5f0000 - 0x00007ff98d62b000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\_bounded_integers.cp311-win_amd64.pyd
+0x00007ff98d180000 - 0x00007ff98d1ac000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\bit_generator.cp311-win_amd64.pyd
+0x00007ff98ae00000 - 0x00007ff98ae2c000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\_common.cp311-win_amd64.pyd
+0x00007ff970ba0000 - 0x00007ff970c3a000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\_generator.cp311-win_amd64.pyd
+0x00007ff99e720000 - 0x00007ff99e73b000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\_pcg64.cp311-win_amd64.pyd
+0x00007ff99c5f0000 - 0x00007ff99c609000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\_mt19937.cp311-win_amd64.pyd
+0x00007ff99bc20000 - 0x00007ff99bc38000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\_philox.cp311-win_amd64.pyd
+0x00007ff99bbf0000 - 0x00007ff99bc03000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\_sfc64.cp311-win_amd64.pyd
+0x00007ff96dc90000 - 0x00007ff96dd13000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random\mtrand.cp311-win_amd64.pyd
+0x00007ff9b20f0000 - 0x00007ff9b20fb000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\pandas_parser.cp311-win_amd64.pyd
+0x00007ff9b2040000 - 0x00007ff9b204c000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\pandas_datetime.cp311-win_amd64.pyd
+0x00007ff9639e0000 - 0x00007ff963acf000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\interval.cp311-win_amd64.pyd
+0x00007ff9616f0000 - 0x00007ff9618ad000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\hashtable.cp311-win_amd64.pyd
+0x00007ff9898f0000 - 0x00007ff98991d000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\missing.cp311-win_amd64.pyd
+0x00007ff986d00000 - 0x00007ff986d27000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\dtypes.cp311-win_amd64.pyd
+0x00007ff996310000 - 0x00007ff996323000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\ccalendar.cp311-win_amd64.pyd
+0x00007ff995180000 - 0x00007ff99519d000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\np_datetime.cp311-win_amd64.pyd
+0x00007ff9866b0000 - 0x00007ff9866e6000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\conversion.cp311-win_amd64.pyd
+0x00007ff9a3dd0000 - 0x00007ff9a3de0000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\base.cp311-win_amd64.pyd
+0x00007ff961f60000 - 0x00007ff962023000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\offsets.cp311-win_amd64.pyd
+0x00007ff975c70000 - 0x00007ff975ce0000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\timestamps.cp311-win_amd64.pyd
+0x00007ff985680000 - 0x00007ff9856af000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\nattype.cp311-win_amd64.pyd
+0x00007ff970e80000 - 0x00007ff970eec000 	c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs\timedeltas.cp311-win_amd64.pyd
+
+dbghelp: loaded successfully - version: 4.0.5 - missing functions: none
+symbol engine: initialized successfully - sym options: 0x614 - pdb path: .;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record;C:\Windows\SYSTEM32;C:\Program Files\ESET\ESET Security;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\zmq\backend\cython;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\DLLs;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\tornado;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\psutil;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\debugpy\_vendored\pydevd\_pydevd_bundle;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\_core;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\linalg;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\matplotlib;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\PIL;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\kiwisolver;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\random;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\tslibs;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pandas\_libs\window;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\_lib;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\numpy\fft;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\ndimage;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\special;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\spatial;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\sparse;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\linalg;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\spatial\transform;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\skimage\transform;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\skimage\measure;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\backports\zstd;C:\Windows\WinSxS\amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.26100.4768_none_3e0c112ce331287c;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\lib\jvm\bin\server;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\lib\jvm\bin;C:\Windows\System32\DriverStore\FileRepository\nv_dispig.inf_amd64_74b0ab655986054e;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\lib\reg1.3;C:\Program Files\Common Files\microsoft shared\ink;C:\Windows\WinSxS\amd64_microsoft.windows.gdiplus_6595b64144ccf1df_1.1.26100.4946_none_6ef530c63dc53cfc;C:\Program Files\ownCloud;C:\Users\taylorhearn\AppData\Local\Microsoft\OneDrive\26.002.0105.0001_1;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\yaml;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\cytoolz;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\markupsafe;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\skimage\util;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pydantic_core;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\_lib\_uarray;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\fft\_pocketfft;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\fftpack;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\win32;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\pywin32_system32;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\win32comext\shell;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\rpds;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\PyQt5;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\wrapt;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\skimage\draw;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\skimage\_shared;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\sparse\linalg\_dsolve;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\sparse\linalg\_eigen\arpack;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\sparse\linalg;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\optimize;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\optimize\_trlib;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\optimize\_lsq;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\optimize\_highspy;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\integrate;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\interpolate;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\stats;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\stats\_levy_stable;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\sparse\csgraph;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\scipy\stats\_rcont;c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Lib\site-packages\vispy\visuals\text;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\plugins\platforms;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\plugins\styles;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\plugins\imageformats;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\plugins\iconengines
+
+VM Arguments:
+jvm_args: --add-opens=java.base/java.lang=ALL-UNNAMED 
+java_command: <unknown>
+java_class_path (initial): C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\3D_Blob_Segmentation-4.0.0.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\3D_Objects_Counter-2.0.1.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\3D_Viewer-5.0.0.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\adapter-rxjava2-2.9.0.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\ahocorasick-0.2.4.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\aircompressor-0.27.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\alphanumeric-comparator-1.4.1.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\AnalyzeSkeleton_-3.4.2.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\animal-sniffer-annotations-1.23.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\Anisotropic_Diffusion_2D-2.0.1.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\annotations-13.0.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\annotations-4.1.1.4.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\ant-1.10.15.jar;C:\Users\taylorhearn\.jgo\sc.fiji\fiji\RELEASE\23ea5dcb02ab11d995fbbaf559e6f6e4c1c1a6685cbe007410c264a38459c2c1\ant-launcher-1.10.15.jar;C:\Users\taylorhearn\.jgo\sc.fiji\
+Launcher Type: generic
+
+[Global flags]
+     intx CICompilerCount                          = 4                                         {product} {ergonomic}
+     uint ConcGCThreads                            = 3                                         {product} {ergonomic}
+     uint G1ConcRefinementThreads                  = 10                                        {product} {ergonomic}
+   size_t G1HeapRegionSize                         = 4194304                                   {product} {ergonomic}
+    uintx GCDrainStackTargetSize                   = 64                                        {product} {ergonomic}
+   size_t InitialHeapSize                          = 2147483648                                {product} {ergonomic}
+   size_t MarkStackSize                            = 4194304                                   {product} {ergonomic}
+   size_t MaxHeapSize                              = 32178700288                               {product} {ergonomic}
+   size_t MaxNewSize                               = 19306381312                               {product} {ergonomic}
+   size_t MinHeapDeltaBytes                        = 4194304                                   {product} {ergonomic}
+    uintx NonNMethodCodeHeapSize                   = 5836300                                {pd product} {ergonomic}
+    uintx NonProfiledCodeHeapSize                  = 122910970                              {pd product} {ergonomic}
+    uintx ProfiledCodeHeapSize                     = 122910970                              {pd product} {ergonomic}
+    uintx ReservedCodeCacheSize                    = 251658240                              {pd product} {ergonomic}
+     bool SegmentedCodeCache                       = true                                      {product} {ergonomic}
+     bool UseCompressedClassPointers               = true                                 {lp64_product} {ergonomic}
+     bool UseCompressedOops                        = true                                 {lp64_product} {ergonomic}
+     bool UseG1GC                                  = true                                      {product} {ergonomic}
+     bool UseLargePagesIndividualAllocation        = false                                  {pd product} {ergonomic}
+
+Logging:
+Log output configuration:
+ #0: stdout all=warning uptime,level,tags
+ #1: stderr all=off uptime,level,tags
+
+Environment Variables:
+JAVA_HOME=C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\lib\jvm
+PATH=c:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\mingw-w64\bin;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\usr\bin;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Library\bin;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\Scripts;C:\Users\taylorhearn\AppData\Local\miniconda3\envs\nap-ij-record\bin;C:\Users\taylorhearn\AppData\Local\miniconda3\condabin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\Nsight Compute 2023.2.0;C:\Program Files\Microsoft VS Code\bin;C:\Users\taylorhearn\AppData\Local\miniconda3;C:\Users\taylorhearn\AppData\Local\miniconda3\Library\mingw-w64\bin;C:\Users\taylorhearn\AppData\Local\miniconda3\Library\usr\bin;C:\Users\taylorhearn\AppData\Local\miniconda3\Library\bin;C:\Users\taylorhearn\AppData\Local\miniconda3\Scripts;C:\Users\taylorhearn\AppData\Local\Microsoft\WindowsApps;C:\Users\taylorhearn\AppData\Local\Programs\Git\cmd;C:\Users\taylorhearn\AppData\Local\Programs\Microsoft VS Code\bin
+USERNAME=taylorhearn
+TERM=xterm-color
+OS=Windows_NT
+PROCESSOR_IDENTIFIER=Intel64 Family 6 Model 143 Stepping 8, GenuineIntel
+TMP=C:\Users\TAYLOR~1\AppData\Local\Temp
+TEMP=C:\Users\TAYLOR~1\AppData\Local\Temp
+
+
+
+---------------  S Y S T E M  ---------------
+
+OS: Windows 11 , 64 bit Build 26100 (10.0.26100.4768)
+OS uptime: 104 days 20:57 hours
+Hyper-V role detected
+
+CPU:total 12 (initial active 12) (6 cores per cpu, 2 threads per core) family 6 model 143 stepping 8 microcode 0x2b0005c0, cmov, cx8, fxsr, mmx, sse, sse2, sse3, ssse3, sse4.1, sse4.2, popcnt, avx, avx2, aes, clmul, erms, rtm, 3dnowpref, lzcnt, ht, tsc, tscinvbit, bmi1, bmi2, adx, evex, sha, fma
+
+Memory: 4k page, system-wide physical 261636M (199017M free)
+TotalPageFile size 278020M (AvailPageFile size 196759M)
+current process WorkingSet (physical memory assigned to process): 1490M, peak: 1705M
+current process commit charge ("private bytes"): 1503M, peak: 3795M
+
+vm_info: OpenJDK 64-Bit Server VM (11.0.29+7-LTS) for windows-amd64 JRE (Zulu11.84+17-CA) (11.0.29+7-LTS), built on Oct  4 2025 15:27:24 by "zulu_re" with MS VC++ 15.9 (VS2017)
+
+END.

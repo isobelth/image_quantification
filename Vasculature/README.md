@@ -3,6 +3,7 @@
 This code enables quantification of vasculature permeability in 3D images at two time points (t0, t>0 (in our experiment, this is referred to as t2)).
 Vasculature is segmented using a model classifier from [Hajal et al.](https://www.nature.com/articles/s41596-021-00635-w#Sec44)
 
+To install all the environment variables, just run conda env create -f yourfile.yml, where the yml file is contained in this repo. Once installed, run conda activate nap-ij.
 
 ## Code Explanation
 
