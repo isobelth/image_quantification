@@ -47,6 +47,4 @@ The analysis returns a per-image table with:
 - The method assumes minimal barrier motion and a roughly horizontal interface. Significant tissue drift or oblique barriers may require reorientation or customized preprocessing.
 - Permeability is inferred from fluorescence intensity and depends on consistent imaging settings and bleaching correction.
 
-## Citation
-If you use this pipeline in a publication, please cite the associated study and this repository.
 
