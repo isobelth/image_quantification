@@ -2,7 +2,7 @@
 
 **Background:**
 
-![Alt text](images/image.png)
+![Alt text](README_images/image.png)
 
 *A significant challenge encountered during the acquisition of large z-stacks of acini using confocal microscopy was the signal attenuation in deeper z-slices, a common limitation when imaging thick specimens. This signal drop-off results from the increasing distance from the confocal microscope's detector, affecting the consistency of fluorescence intensity across the stack. To address this issue, rather than adjusting the capture settings to compensate for signal drop-off (which proved to be excessively time-consuming and incompatible with high-throughput requirements), the image stacks were divided into two distinct subsets: one comprising the brighter upper slices and the other encompassing the dimmer, deeper slices.*
 
@@ -25,7 +25,7 @@
 
 For each segmentation (e.g. top nuclear, bottom membrane…), the segmentation training process will look as follows:
 
-![Alt text](images/image1.png)
+![Alt text](README_images/image1.png)
 
 Try to get the segmentation as close as possible to the ground truth without overfitting.
 
@@ -37,7 +37,7 @@ Try to get the segmentation as close as possible to the ground truth without ove
     1. You will need to run this four times for the four conditions (top images with top nuclear classifer, top images with top membrane classifer, bottom images with bottom nuclear classifier, bottom images with bottom membrane classifier)
 4. Save all the “top” segmentations in one folder and the “bottom” ones is another. You can use the following [macro](https://www.dropbox.com/scl/fi/re93aerrdihswd5rm8btp/concatenate_files_in_two_folders_save.ijm?rlkey=fvpr1503h2e0yiect4dku03jp&dl=0) to stack the top and bottom halves back into a combined stack. The concatenated segmentations will be saved in another folder.
 
-![Alt text](images/image2.png)
+![Alt text](README_images/image2.png)
 
 ## Segment Acinus
 
@@ -45,22 +45,22 @@ Try to get the segmentation as close as possible to the ground truth without ove
 2. In some instances, neighbouring acini were imaged in one field of view. To distinguish individual acini, especially when they were merely proximal or superficially connected rather than genuinely forming a single, non-spherical entity, further processing steps were necessary. The sphericity of segmented objects, determined by the ratio of the second- to the zeroth-order eigenvalues of the inertia tensor, helped identify such instances. Low sphericity of identified objects indicated that the segmentation might have erroneously combined multiple neighbouring acini into one. To address this, morphological erosion was employed as a refinement step to effectively separate proximal acini without mistakenly dividing acini that were inherently non-spherical.
 3. Following this correction, only the largest acinus identified within these segmented groups was quantified, ensuring accurate representation and analysis of individual acini structures.
 
-![Alt text](images/image3.png)
+![Alt text](README_images/image3.png)
 ## Segment Nuclei within the Acinus
 
 A distance transform is used to separate touching nuclei. The principles of this are set forth below:
 
-![Alt text](images/image4.png)
+![Alt text](README_images/image4.png)
 
 Labkit nuclear segmentations are cleaned, and holes are filled. A watershed segmentation is used to separate proximal nuclei. The min_dist parameter can be altered to match the size of your cells (more/less harshly separate touching objects).
 
-![Alt text](images/image5.png)
+![Alt text](README_images/image5.png)
 
 ## Segment Cells within the Acinus
 
 1. The centre of mass positions of each nuclei are used as seed points to segment the cells.
 2. Resulting cell labels are expanded to touch.
 
-![Alt text](images/image6.png)
+![Alt text](README_images/image6.png)
 
 ## Quantify Cell and Nuclear Morphological Parameters

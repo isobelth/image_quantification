@@ -15,7 +15,7 @@ The code is generalisable to any fluorescence channels, but this experiment (and
     - I recommend using the GUI to do this very easily (instructions [here](https://www.youtube.com/watch?v=5qANHWoubZU))
 - Save your generated classifier for use within the Python code
 
-![images/image.png](images/image.png)
+![README_images/image.png](README_images/image.png)
 
 ## Code Explanation
 
@@ -24,7 +24,7 @@ The code is generalisable to any fluorescence channels, but this experiment (and
     1. Depending on your experimental conditions and temporal resolution, [TrackPy](https://soft-matter.github.io/trackpy/v0.6.4/) may also be used so that all code remains within Python. However, TrackMate’s incorporation of shape metrics for matching made it more suitable for our experiment
 3. Resultant tracked segmentations from (2) can be quantified and analysed in Python.
 
-![images/image1.png](images/image1.png)
+![README_images/image1.png](README_images/image1.png)
 
 ## Quantify Apoptotic/Necroptotic Cells
 
@@ -35,4 +35,4 @@ The code is generalisable to any fluorescence channels, but this experiment (and
 - Cells are defined as apoptotic when their green (AV) fluorescence exceeds a predefined threshold
 - Cells are defined as necroptotic when their red (PI) fluorescence exceeds a predefined threshold, assuming that at no point the cell has previously been defined as apoptotic)
 
-![images/image2.png](images/image2.png)
+![README_images/image2.png](README_images/image2.png)

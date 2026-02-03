@@ -15,10 +15,10 @@
 - Cell nuclei were segmented and binarised using an Otsu threshold
 - Neighbouring nuclei were separated using a watershed algorithm
 
-![images/image1.png](images/image1.png)
+![README_images/image1.png](README_images/image1.png)
 
 - Cell boundaries were approximated by expanding nuclear labels without overlap until they filled the image.
     - Any segmented cells touching the image border were discarded from the analysis.
     - Any cells containing nuclei above a threshold area were discarded from analysis (cells assumed to be in M-phase)
     
-![images/image2.png](images/image2.png)
+![README_images/image2.png](README_images/image2.png)

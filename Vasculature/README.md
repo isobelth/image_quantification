@@ -10,7 +10,7 @@ Vasculature is segmented using a model classifier from [Hajal et al.](https://ww
 2. Segmentation of the vasculature at t0 is performed using a model classifier from [Hajal et al.](https://www.nature.com/articles/s41596-021-00635-w#Sec44), therefore ImageJ is run in headless mode to perform segmentation with auto thresholding (Otsu) and erosion preprocessing as per the paper. 
     - This segmented region defines the vasculature at BOTH t0 and t2 (t>0)
 3. Identified vasculature is cleaned to remove small objects (noise)
-![images/image1.png](images/image1.png)
+![README_images/image1.png](README_images/image1.png)
 4. Volume and area are of the segmented region are calculated
 5. Signal intensity inside and outside the identified vasculature is calculated at t0 and t2 (t>0)
 5. Permeability is calculated and output (along with interrim) in a dataframe.

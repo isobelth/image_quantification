@@ -16,13 +16,13 @@ The code supports:
 
 Nuclei are extracted and segmented using intensity thresholding, morphological operations, and watershed segmentation (the principles of which are set out below)
 
-![images/image.png](images/image.png)
+![README_images/image.png](README_images/image.png)
 
 Red and green channels are combined to create a combined nuclear signal. This combined image is segmented to create “all_combined_nuclei” (no colour dependence)
 
 Individual red and green channels are also segmented independently to create “all_green_nuclei” and “all_red_nuclei”: binary masks denoting green/red-positive nuclei
 
-![images/image1.png](images/image1.png)
+![README_images/image1.png](README_images/image1.png)
 
 ## Nuclear Tracking and Plotting
 
@@ -37,4 +37,4 @@ Trajectories of long-lived nuclei are plotted and coloured by their assigned ide
 
 Output dataframes can be used for cell cycle analysis
 
-![images/image2.png](images/image2.png)
+![README_images/image2.png](README_images/image2.png)

@@ -4,7 +4,7 @@
 This notebook processes .lif perfusion datasets to segment maternal/fetal regions and compute permeability across a perfusable region.
 
 The experiment is set up as follows:
-![images/image2.png](images/image2.png)
+![README_images/image2.png](README_images/image2.png)
 
 Code aims to:
 1. Reconstruct the barrier across all z slices
@@ -24,7 +24,7 @@ Code aims to:
 6. The calculated barrier and fetal and maternal regions are assumed constant over the imaging times. The dextran intensities are calculated in each region at each timepoint to calculate permeability through the perfusable region
 
 
-![images/image3.png](images/image3.png)
+![README_images/image3.png](README_images/image3.png)
 
 
 ## Output
