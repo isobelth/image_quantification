@@ -31,3 +31,10 @@
 **/*.png
 **/*.jpg
 **/*.jpeg
+
+!**/README_images/
+!**/README_images/**/
+!**/README_images/**/*.gif
+!**/README_images/**/*.png
+!**/README_images/**/*.jpg
+!**/README_images/**/*.jpeg
