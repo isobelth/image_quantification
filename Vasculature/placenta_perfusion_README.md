@@ -1,43 +1,52 @@
 # Placenta Perfusion Analysis
 
 ## Overview
-This notebook processes .lif perfusion datasets to segment maternal/fetal regions and compute permeability across a perfusable region.
+This workflow quantifies dextran permeability across a placental barrier from Leica `.lif` perfusion datasets. The pipeline segments maternal and fetal compartments, reconstructs the perfusable interface in 3D, and computes permeability over time using fluorescence intensity dynamics.
 
-The experiment is set up as follows:
+Experimental layout:
 ![README_images/image2.png](README_images/image2.png)
 
-Code aims to:
-1. Reconstruct the barrier across all z slices
-2. Remove lower (out of focus) slices and upper slices, where the maternal and fetal regions are separated by a thick, impermeable channel
-3. Calculate permeability across the perfusable barrier by quantifying the intensity of a dextran tracer in the maternal and fetal regions at multiple timepoints
+Key objectives:
+1. Reconstruct the barrier surface across all $z$-slices.
+2. Exclude out-of-focus lower planes and upper planes where maternal and fetal regions are separated by an impermeable channel.
+3. Quantify permeability by measuring dextran signal in maternal and fetal compartments over time.
 
-## Technical Details
-*Assumptions*: Barrier runs horizontally across the image, the barrier position is unchanged over time
+## Methods (Summary)
+**Assumptions:** the barrier is approximately horizontal in the field of view and its position is stable throughout the time series.
 
-1. Uses the t_0 image to extract a boundary surface per z-plane using edge/ridge detection.
-    - Due to heterogeneity across conditions, different thresholding methods are useful in different conditons. The code calculates the intensity ratio of the top and lower half of the image. If this ratio < ratio_cutoff, the barrier appears as a ridge, and sato thresholding is used to identify the boundary. The boundary is skeletonised and a route through it calculated that minimises route length and time off binary skeleton. If the intensity ratio is > ratio_cutoff, a Li threshold is used to identify the light and dark regio of the image, then define the barrier as their meeting point.
-2. Identifies planes from (1) that contain the perfusable barrier
-    - Z slices where no path was found are removed, as well as those that score low on similarity matching compared to the bulk of the stack (suggests that this path travels around the impermeable barrier rather than the perfusable barrier)
-3. Planes of interest are separated and...
-4. ...reconstructed into a smooth interface. Missing single-slices are interpolated.
-5. The fetal and maternal regions of interest are segmented and their area and total dextran signal intensity is summed. Calculates volumes, interface area, intensities, bleaching correction, and permeability values.
-6. The calculated barrier and fetal and maternal regions are assumed constant over the imaging times. The dextran intensities are calculated in each region at each timepoint to calculate permeability through the perfusable region
+1. **Boundary detection (at $t_0$):** A boundary is extracted per $z$-plane using edge/ridge detection.
+   - The pipeline computes an intensity ratio between the upper and lower halves of each image. If the ratio is below `ratio_cutoff`, the barrier appears as a ridge; Sato filtering is used to detect it, followed by skeletonization and shortest-path tracing across the ridge. If the ratio is above `ratio_cutoff`, a Li threshold separates bright/dark regions, and the boundary is defined at their interface.
+2. **Perfusable plane selection:** Slices without a valid path are discarded, as are slices with low similarity to the bulk of the stack (indicative of paths around the impermeable channel).
+3. **Interface reconstruction:** Selected planes are interpolated into a smooth surface; isolated missing slices are filled by interpolation.
+4. **Compartment segmentation:** Maternal and fetal regions are segmented, and volumes, interface area, and total dextran intensities are computed. Photobleaching correction and permeability metrics are derived.
+5. **Time-series quantification:** The reconstructed compartments are treated as fixed over time; dextran intensities are measured per timepoint to estimate permeability across the perfusable interface.
 
-
+Illustrative reconstruction:
 ![README_images/image3.png](README_images/image3.png)
 
+## Inputs
+- Leica `.lif` perfusion image stacks containing a dextran tracer channel.
+- Voxel size metadata (µm) embedded in the image or provided by the user.
+- A representative $t_0$ frame for boundary detection.
 
-## Output
-The analysis cell returns a DataFrame with one row per image. It includes:
+## Outputs
+The analysis returns a per-image table with:
 - image identifiers (file, index, name)
-- z-plane counts and kept z-range
+- retained $z$-range and number of planes
 - maternal/fetal volumes (µm³)
 - interface area (µm²)
-- permeability values and percent changes
-- voxel size and failure diagnostics
+- permeability values and percent change over time
+- voxel size and quality-control diagnostics
 
+## Quality Control and Troubleshooting
+- Boundary detection can fail in low-contrast or atypical morphologies; failures are reported via an `error` field or geometry diagnostics.
+- If boundary detection is unstable, tune `params` (notably `ratio_cutoff` and thresholding settings) and re-run.
+- Verify reconstructed interfaces visually before downstream analysis.
 
-## Notes
-- The segmentation step can fail for some images. Those rows will include an `error` or geometry diagnostics.
-- Adjust `params` if boundary detection is unstable for a dataset.
+## Limitations
+- The method assumes minimal barrier motion and a roughly horizontal interface. Significant tissue drift or oblique barriers may require reorientation or customized preprocessing.
+- Permeability is inferred from fluorescence intensity and depends on consistent imaging settings and bleaching correction.
+
+## Citation
+If you use this pipeline in a publication, please cite the associated study and this repository.
 
