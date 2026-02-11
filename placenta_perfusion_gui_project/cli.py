@@ -12,7 +12,7 @@ from __future__ import annotations
 
 def main() -> None:
     # Import lazily so `python -m pip install ...` etc doesn't import napari.
-    from your_gui import main as run_gui
+  from placenta_permeability import main as run_gui
 
     run_gui()
 

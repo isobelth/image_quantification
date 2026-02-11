@@ -16,8 +16,6 @@ dependencies = [
   "pandas",
   "scipy",
   "scikit-image",
-  "matplotlib",
-  "seaborn",
   "qtpy",
   "magicgui",
   "napari",
@@ -28,4 +26,4 @@ dependencies = [
 placenta-perfusion-gui = "cli:main"
 
 [tool.setuptools]
-py-modules = ["your_gui", "cli"]
+py-modules = ["placenta_permeability", "cli"]
