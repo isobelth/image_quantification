@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "placenta-perfusion-gui"
+version = "0.1.0"
+description = "Interactive napari GUI for placenta perfusion permeability analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# NOTE: This list is intentionally minimal for packaging purposes.
+# Most users of this repo will likely install dependencies via the provided conda environment.
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "scikit-image",
+  "matplotlib",
+  "seaborn",
+  "qtpy",
+  "magicgui",
+  "napari",
+  "liffile",
+]
+
+[project.scripts]
+placenta-perfusion-gui = "cli:main"
+
+[tool.setuptools]
+py-modules = ["your_gui", "cli"]
