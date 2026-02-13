@@ -41,8 +41,6 @@ from skimage.morphology import (
 
 warnings.filterwarnings("ignore")
 
-DEFAULT_FRAME_INTERVAL_S = 180
-
 
 try:
     from IPython.display import display  # type: ignore
@@ -748,7 +746,7 @@ class PlacentaPerfusionApp:
             self._segment_and_view,
             image_choice={"label": "Image", "choices": ["(load images)"], "widget_type": "ComboBox"},
             dextran_channel={"label": "Dextran channel", "choices": ["0"], "widget_type": "ComboBox"},
-            frame_interval_s={"label": "Time separation (s)", "min": 1, "max": 1000000, "step": 1, "value": DEFAULT_FRAME_INTERVAL_S, "widget_type": "SpinBox"},
+            frame_interval_s={"label": "Time separation (s)", "min": 1, "max": 1000000, "step": 1, "value": 180, "widget_type": "SpinBox"},
             clear_layers={"label": "Clear viewer first"},
             call_button="Segment + View",
         )
@@ -779,71 +777,6 @@ class PlacentaPerfusionApp:
     def _append_log(self, message: str):
         self.images_output.value = (
             self.images_output.value.rstrip() + "\n" + message if self.images_output.value else message
-        )
-
-    def _warn(self, message: str, *, show_popup: bool = False):
-        self._append_log(f"[WARN] {message}")
-        if show_popup:
-            show_warning(message)
-
-    def _require_lif_loaded(self) -> bool:
-        if self._selected_lif_path is None or not self._selected_lif_path.exists():
-            self._warn("Select a .lif file and click 'Load images' first.")
-            return False
-        if not self._image_choice_map:
-            self._warn("Click 'Load images' to populate the dropdown.")
-            return False
-        return True
-
-    @staticmethod
-    def _normalize_csv_path(filename: str) -> str:
-        return filename if filename.lower().endswith(".csv") else f"{filename}.csv"
-
-    def _prompt_csv_save_path(self) -> Optional[str]:
-        default_dir = str(self._selected_lif_path.parent) if self._selected_lif_path else str(Path.cwd())
-        filename, _ = QFileDialog.getSaveFileName(
-            None,
-            "Save results CSV",
-            default_dir,
-            "CSV files (*.csv)",
-        )
-        if not filename:
-            self._append_log("[INFO] Save canceled.")
-            return None
-        return self._normalize_csv_path(filename)
-
-    def _parse_frame_interval_s(self, value, *, show_popup: bool = False) -> int:
-        try:
-            frame_interval_s = int(value)
-            if frame_interval_s < 1:
-                raise ValueError()
-            return frame_interval_s
-        except Exception:
-            msg = f"Invalid time separation; using default {DEFAULT_FRAME_INTERVAL_S}s."
-            self._warn(msg, show_popup=show_popup)
-            return DEFAULT_FRAME_INTERVAL_S
-
-    def _parse_dextran_channel_index(self, value) -> Optional[int]:
-        try:
-            return int(value)
-        except Exception:
-            self._warn("Invalid dextran channel selection.", show_popup=True)
-            return None
-
-    def _set_region_layers(self, maternal_region: np.ndarray, fetal_region: np.ndarray):
-        if "maternal" in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers["maternal"])
-        if "fetal" in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers["fetal"])
-        self.viewer.add_labels(
-            maternal_region,
-            name="maternal",
-            colormap=self.processor.label_colormap("dodgerblue", alpha=0.2),
-        )
-        self.viewer.add_labels(
-            fetal_region,
-            name="fetal",
-            colormap=self.processor.label_colormap("red", alpha=0.2),
         )
 
     def _show_paths_layer(self, lines: Dict[int, np.ndarray], vol_shape: Tuple[int, int, int]):
@@ -896,7 +829,7 @@ class PlacentaPerfusionApp:
         image_name_full: str,
         found_zs: List[int],
         flag: str,
-        frame_interval_s: int = DEFAULT_FRAME_INTERVAL_S,
+        frame_interval_s: int = 180,
         override_range: Optional[Tuple[int, int]] = None,
     ):
         failed_hump, diag = self.processor.bulge_failure_over_slices(
@@ -1000,7 +933,9 @@ class PlacentaPerfusionApp:
             t1_2_tfinal_p = np.nan
 
         debug_info = (
-            f"[DEBUG] t0_tfinal_p={t0_tfinal_p},  kept_z_min={int(kept_zs[0])}, kept_z_max={int(kept_zs[-1])} "
+            f"[DEBUG] t0_tfinal_p={t0_tfinal_p}, "
+            f"t0_t1_2_p={t0_t1_2_p}, kept_z_min={int(kept_zs[0])}, "
+            f"maternal_region_volume_px={int(maternal_region_volume)}"
         )
         self._append_log(debug_info)
 
@@ -1080,15 +1015,24 @@ class PlacentaPerfusionApp:
             image_name_full=data["image_name_full"],
             found_zs=found_zs,
             flag=data["flag"],
-            frame_interval_s=int(data.get("frame_interval_s", DEFAULT_FRAME_INTERVAL_S)),
+            frame_interval_s=int(data.get("frame_interval_s", 180)),
             override_range=(min_z, max_z),
         )
-        print(
-            f"[OVERRIDE] kept_z_min={result.get('kept_z_min')}, kept_z_max={result.get('kept_z_max')}",
-            flush=True,
-        )
 
-        self._set_region_layers(maternal_region, fetal_region)
+        if "maternal" in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers["maternal"])
+        if "fetal" in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers["fetal"])
+        self.viewer.add_labels(
+            maternal_region,
+            name="maternal",
+            colormap=self.processor.label_colormap("dodgerblue", alpha=0.2),
+        )
+        self.viewer.add_labels(
+            fetal_region,
+            name="fetal",
+            colormap=self.processor.label_colormap("red", alpha=0.2),
+        )
 
         self._results.append(result)
         self._results_df = pd.DataFrame(self._results)
@@ -1135,10 +1079,8 @@ class PlacentaPerfusionApp:
             raise ValueError("image index out of range")
         lif_img = lif.images[image_index]
         xa = lif_img.asxarray()
-        x_step = self.processor.step("X", xa)
-        z_step = self.processor.step("Z", xa)
-        x_um = x_step * 1e6 if x_step is not None else None
-        z_um = z_step * 1e6 if z_step is not None else None
+        x_um = self.processor.step("X", xa) * 1e6 if self.processor.step("X", xa) is not None else None
+        z_um = self.processor.step("Z", xa) * 1e6 if self.processor.step("Z", xa) is not None else None
         image_name_full = "".join(getattr(lif_img, "path", ())) or f"Image {image_index}"
 
         img = lif_img.asarray()
@@ -1285,24 +1227,61 @@ class PlacentaPerfusionApp:
         self,
         image_choice: str = "(load images)",
         dextran_channel: str = "0",
-        frame_interval_s: int = DEFAULT_FRAME_INTERVAL_S,
+        frame_interval_s: int = 180,
         clear_layers: bool = True,
     ):
-        frame_interval_s = self._parse_frame_interval_s(frame_interval_s, show_popup=True)
-        if not self._require_lif_loaded():
+        try:
+            frame_interval_s = int(frame_interval_s)
+            if frame_interval_s < 1:
+                raise ValueError()
+        except Exception:
+            frame_interval_s = 180
+            self._append_log("[WARN] Invalid time separation; using default 180s.")
+            show_warning("Invalid time separation; using default 180s.")
+        if self._selected_lif_path is None or not self._selected_lif_path.exists():
+            self.images_output.value = (
+                self.images_output.value.rstrip()
+                + "\n[WARN] Select a .lif file and click 'Load images' first."
+                if self.images_output.value
+                else "[WARN] Select a .lif file and click 'Load images' first."
+            )
+            return None
+
+        if not self._image_choice_map:
+            self.images_output.value = (
+                self.images_output.value.rstrip()
+                + "\n[WARN] Click 'Load images' to populate the dropdown."
+                if self.images_output.value
+                else "[WARN] Click 'Load images' to populate the dropdown."
+            )
             return None
 
         image_index = self._image_choice_map.get(image_choice)
         if image_index is None:
-            self._warn("Please select an image from the dropdown.")
+            self.images_output.value = (
+                self.images_output.value.rstrip()
+                + "\n[WARN] Please select an image from the dropdown."
+                if self.images_output.value
+                else "[WARN] Please select an image from the dropdown."
+            )
             return None
 
-        dextran_channel_index = self._parse_dextran_channel_index(dextran_channel)
-        if dextran_channel_index is None:
+        try:
+            dextran_channel_index = int(dextran_channel)
+        except Exception:
+            self.images_output.value = (
+                self.images_output.value.rstrip() + "\n[WARN] Invalid dextran channel selection."
+                if self.images_output.value
+                else "[WARN] Invalid dextran channel selection."
+            )
+            show_warning("Select a valid dextran channel.")
             return None
 
-        self._append_log(
-            f"[INFO] Segmenting image_index={image_index} with dextran_channel={dextran_channel_index}..."
+        self.images_output.value = (
+            self.images_output.value.rstrip()
+            + f"\n[INFO] Segmenting image_index={image_index} with dextran_channel={dextran_channel_index}...\n"
+            if self.images_output.value
+            else f"[INFO] Segmenting image_index={image_index} with dextran_channel={dextran_channel_index}...\n"
         )
 
         try:
@@ -1313,9 +1292,8 @@ class PlacentaPerfusionApp:
                 frame_interval_s,
             )
         except Exception as e:
-            msg = f"Segmentation failed: {type(e).__name__}: {e}"
-            self._append_log(msg)
-            show_error(msg)
+            self.images_output.value = self.images_output.value.rstrip() + f"\nSegmentation failed: {type(e).__name__}: {e}"
+            show_error(f"Segmentation failed: {type(e).__name__}: {e}")
             return None
 
         if clear_layers:
@@ -1323,7 +1301,16 @@ class PlacentaPerfusionApp:
 
         self.viewer.add_image(dextran_t0, name="dextran_t0")
         if maternal_region is not None and fetal_region is not None:
-            self._set_region_layers(maternal_region, fetal_region)
+            self.viewer.add_labels(
+                maternal_region,
+                name="maternal",
+                colormap=self.processor.label_colormap("dodgerblue", alpha=0.2),
+            )
+            self.viewer.add_labels(
+                fetal_region,
+                name="fetal",
+                colormap=self.processor.label_colormap("red", alpha=0.2),
+            )
 
         if self._last_segmentation is not None:
             self._show_paths_layer(
@@ -1332,26 +1319,64 @@ class PlacentaPerfusionApp:
             )
             self._update_override_controls(self._last_segmentation["found_zs"])
 
-        self._append_log("[OK] Segmentation complete :)")
+        self.images_output.value = self.images_output.value.rstrip() + "\n Segmentation complete :)"
         self._results.append(result)
         self._results_df = pd.DataFrame(self._results)
         display(self._results_df)
         return result
 
     def _segment_all_images(self):
-        if not self._require_lif_loaded():
+        if self._selected_lif_path is None or not self._selected_lif_path.exists():
+            self.images_output.value = (
+                self.images_output.value.rstrip()
+                + "\n[WARN] Select a .lif file and click 'Load images' first."
+                if self.images_output.value
+                else "[WARN] Select a .lif file and click 'Load images' first."
+            )
             return None
 
-        dextran_channel_index = self._parse_dextran_channel_index(
-            self.segment_and_view.dextran_channel.value
+        if not self._image_choice_map:
+            self.images_output.value = (
+                self.images_output.value.rstrip()
+                + "\n[WARN] Click 'Load images' to populate the dropdown."
+                if self.images_output.value
+                else "[WARN] Click 'Load images' to populate the dropdown."
+            )
+            return None
+
+        try:
+            dextran_channel_index = int(self.segment_and_view.dextran_channel.value)
+        except Exception:
+            self.images_output.value = (
+                self.images_output.value.rstrip() + "\n[WARN] Invalid dextran channel selection."
+                if self.images_output.value
+                else "[WARN] Invalid dextran channel selection."
+            )
+            show_warning("Select a valid dextran channel.")
+            return None
+        try:
+            frame_interval_s = int(self.segment_and_view.frame_interval_s.value)
+            if frame_interval_s < 1:
+                raise ValueError()
+        except Exception:
+            frame_interval_s = 180
+            self._append_log("[WARN] Invalid time separation; using default 180s.")
+
+        default_dir = (
+            str(self._selected_lif_path.parent) if self._selected_lif_path else str(Path.cwd())
         )
-        if dextran_channel_index is None:
+        filename, _ = QFileDialog.getSaveFileName(
+            None,
+            "Save results CSV",
+            default_dir,
+            "CSV files (*.csv)",
+        )
+        if not filename:
+            self.images_output.value = self.images_output.value.rstrip() + "\n[INFO] Save canceled."
             return None
 
-        frame_interval_s = self._parse_frame_interval_s(self.segment_and_view.frame_interval_s.value)
-        filename = self._prompt_csv_save_path()
-        if not filename:
-            return None
+        if not filename.lower().endswith(".csv"):
+            filename = f"{filename}.csv"
 
         image_indices = sorted(set(self._image_choice_map.values()))
         self._append_log(f"[INFO] Running all images (n={len(image_indices)}) to CSV: {filename}")
@@ -1391,15 +1416,28 @@ class PlacentaPerfusionApp:
 
     def _save_results(self):
         if self._results_df is None or self._results_df.empty:
-            self._warn("No results to save yet.", show_popup=True)
+            self.images_output.value = self.images_output.value.rstrip() + "\n[WARN] No results to save yet."
+            show_warning("No results to save yet.")
             return None
 
-        filename = self._prompt_csv_save_path()
+        default_dir = (
+            str(self._selected_lif_path.parent) if self._selected_lif_path else str(Path.cwd())
+        )
+        filename, _ = QFileDialog.getSaveFileName(
+            None,
+            "Save results CSV",
+            default_dir,
+            "CSV files (*.csv)",
+        )
         if not filename:
+            self.images_output.value = self.images_output.value.rstrip() + "\n[INFO] Save canceled."
             return None
+
+        if not filename.lower().endswith(".csv"):
+            filename = f"{filename}.csv"
 
         self._results_df.to_csv(filename, index=False)
-        self._append_log(f"[OK] Saved results to: {filename}")
+        self.images_output.value = self.images_output.value.rstrip() + f"\n[OK] Saved results to: {filename}"
         return filename
 
     def _update_channel_choices(self, *_):
