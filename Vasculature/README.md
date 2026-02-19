@@ -100,6 +100,4 @@ If an image/channel cannot be processed, a `flag` column is written with an expl
 
 ## Example images
 
-![Segmentation example](README_images/image1.png)
-
 ![Permeability example](README_images/image2.png)
