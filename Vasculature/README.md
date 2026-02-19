@@ -62,5 +62,5 @@ The app is created by instantiating `PerfusionNapariGUIApp()` and adds dock widg
 
 - Segmentation is always generated from the **first selected dextran channel**, then reused for all selected channels in that image.
 - When channel counts vary across images in a `.lif`, unavailable channels are skipped per-image.
-
+- You need to download VS code, miniconda (add to PATH!), and the environment.yml file from this directory. When you first open VS code, open a terminal (command prompt) and run conda env create -f environment.yml       . Once it has loaded, run  conda activate nap-ij      (the name of the new environment).
 
