@@ -5,6 +5,7 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 import warnings
+from napari.utils.colormaps import DirectLabelColormap
 
 import napari
 import numpy as np
@@ -793,7 +794,7 @@ class PlacentaPerfusionApp:
         self.viewer.add_labels(
             path_vol,
             name="paths_all",
-            colormap=self.processor.label_colormap("gold", alpha=0.6),
+            colormap=DirectLabelColormap(color_dict={0: (0.0, 0.0, 0.0, 0.0), 1: (50.0/255, 205.0/255, 50.0/255, 0.8)}),
         )
 
     def _update_override_controls(self, found_zs: List[int]):
@@ -1026,12 +1027,12 @@ class PlacentaPerfusionApp:
         self.viewer.add_labels(
             maternal_region,
             name="maternal",
-            colormap=self.processor.label_colormap("dodgerblue", alpha=0.2),
+            colormap=DirectLabelColormap(color_dict={0: (0.0, 0.0, 0.0, 0.0), 1: (30.0/255, 144.0/255, 255.0/255, 0.8)}),
         )
         self.viewer.add_labels(
             fetal_region,
             name="fetal",
-            colormap=self.processor.label_colormap("red", alpha=0.2),
+            colormap=DirectLabelColormap(color_dict={0: (0.0, 0.0, 0.0, 0.0), 1: (1.0, 0.0, 0.0, 0.8)}),
         )
 
         self._results.append(result)
