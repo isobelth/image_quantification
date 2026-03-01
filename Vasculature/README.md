@@ -1,23 +1,66 @@
-## Background
+# Vasculature Perfusion Analysis
 
-This code enables quantification of vasculature permeability in 3D images at two time points (t0, t>0 (in our experiment, this is referred to as t2)).
-Vasculature is segmented using a model classifier from [Hajal et al.](https://www.nature.com/articles/s41596-021-00635-w#Sec44)
+This notebook (`perfusion.ipynb`) provides a **Napari GUI** for quantifying dextran permeability from `.lif` timelapse volumes.
 
-To install all the environment variables, just run conda env create -f yourfile.yml, where the yml file is contained in this repo. Once installed, run conda activate nap-ij.
+Vasculature segmentation uses a Trainable Weka classifier workflow based on the approach from [Hajal et al.](https://www.nature.com/articles/s41596-021-00635-w#Sec44), with preprocessing in Fiji/ImageJ.
 
-## Code Explanation
+## What the notebook does
 
-1. Single FOVs are extracted from a lif.
-2. Segmentation of the vasculature at t0 is performed using a model classifier from [Hajal et al.](https://www.nature.com/articles/s41596-021-00635-w#Sec44), therefore ImageJ is run in headless mode to perform segmentation with auto thresholding (Otsu) and erosion preprocessing as per the paper. 
-    - This segmented region defines the vasculature at BOTH t0 and t2 (t>0)
-3. Identified vasculature is cleaned to remove small objects (noise)
-![README_images/image1.png](README_images/image1.png)
-4. Volume and area are of the segmented region are calculated
-5. Signal intensity inside and outside the identified vasculature is calculated at t0 and t2 (t>0)
-5. Permeability is calculated and output (along with interrim) in a dataframe.
+For each selected image in a `.lif` file:
 
+1. Loads 3D timelapse data (`T,Z,Y,X` or `T,C,Z,Y,X`).
+2. Segments vasculature from the **first selected dextran channel at t0** using a Weka classifier from [Hajal et al.](https://www.nature.com/articles/s41596-021-00635-w#Sec44)
+3. Cleans segmentation by removing connected components with area < 20 voxels.
+4. Uses the cleaned vasculature mask to quantify intensities:
+     - inside vasculature
+     - outside vasculature (gel)
+     - at `t0` and `tfinal`
+5. Computes geometric terms (surface area and volumes) after z-to-x rescaling.
+6. Calculates permeability:
 
-## Minimal Segmentation File
-- This file allows you to perform segmentation and returns the t0 and t2 signal intensities, along with the segmented region
-- These images can be viewed on Napari, where you can take screenshots or record moview
-- To record movies, make sure you run the code on the nap-ij-record kernel
+$$
+p = \frac{1}{t} \cdot \frac{V_{gel}}{A_{vasc}} \cdot \frac{(b\,I_{gel,t_{final}} - I_{gel,t0})}{(I_{vasc,t0} - I_{gel,t0})}
+$$
+
+where $b = I_{vasc,t0}/I_{vasc,t_{final}}$ is the bleaching coefficient and t is the time (seconds) between the first and last frame.
+
+## GUI workflow
+
+The app is created by instantiating `PerfusionNapariGUIApp()` and adds dock widgets in Napari:
+
+- **Load images**
+    - Select `.lif`
+    - Select Weka classifier file
+    - Click **Load images**
+- **Dextran channel config**
+    - Choose up to 3 dextran channels
+    - Assign custom names per channel
+    - Channel options are auto-populated from the `.lif` channel count
+- **Analyse Single Image**
+    - Select one image from dropdown
+    - Runs quantification
+    - Adds preview layers to Napari:
+        - `Dextran <name> t0`
+        - `Dextran <name> tfinal`
+        - `Segmented Vasculature`
+- **Analyse All Images**
+    - Runs the same pipeline across all images in the loaded `.lif`
+    - Saves results to CSV
+- **Save This Result**
+    - Saves currently accumulated results table to CSV
+
+![Permeability example](README_images/image2.png)
+
+## Inputs
+
+- A valid `.lif` file
+- A valid Trainable Weka classifier file
+- At least one selected dextran channel
+- Images with at least 2 timepoints for permeability calculation
+
+## Notes and assumptions
+
+- Segmentation is always generated from the **first selected dextran channel**, then reused for all selected channels in that image.
+- When channel counts vary across images in a `.lif`, unavailable channels are skipped per-image.
+- You need to download VS code, miniconda (add to PATH!), and the environment.yml file from this directory. When you first open VS code, open a terminal (command prompt) and run conda env create -f environment.yml       . Once it has loaded, run  conda activate nap-ij      (the name of the new environment).
+
