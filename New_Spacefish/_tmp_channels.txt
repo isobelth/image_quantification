@@ -1,0 +1,6 @@
+1 Cy3
+2 AF488
+3 AF647
+4 TexasRed
+5 Cy5
+6 FITC

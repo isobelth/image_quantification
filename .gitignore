@@ -38,3 +38,6 @@
 !**/README_images/**/*.png
 !**/README_images/**/*.jpg
 !**/README_images/**/*.jpeg
+
+# Local model binaries
+New_Spacefish/cellpose_model

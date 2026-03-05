@@ -1,0 +1,56 @@
+params {
+    ////////////// Input/Output //////////////
+    input = "/g/saka/Jorge/Decoding/202504_pipelinetest/v115-3D/input-vascu.csv"
+    censor_input = "/g/saka/Jorge/Decoding/202504_pipelinetest/v115-3D/censoring_input.csv"
+    codebook = "/g/saka/Jorge/Decoding/202504_pipelinetest/v115-3D/Codebook_18plex_v03_short.csv"
+    channel_info = "/g/saka/Jorge/Decoding/202504_pipelinetest/v115-3D/channels.txt"
+    outdir = "/scratch/trojanow/data/DecodingOutput/v115-vascu-0101"  
+    //////////////////////////////////////////
+    //////// Experimental Parameter //////////
+    number_of_spotchannels = 6
+    dapi_channel_index = 6  
+    brightfield_channel_index = 7
+    pixel_size_xy_micron = 0.1893
+    pixel_size_z_micron = 0.75
+    //////////////////////////////////////////
+    //////// Pipeline Parameter //////////
+    // Preprocessing
+    do_z_projection = false
+    scale_factor_xy = 3
+    scale_factor_z = 2
+    dapi_sigma_xy = 1
+    dapi_sigma_z = 0.5
+    // Segmentation with cellpose
+    cellpose_seg_model = "/g/saka/Jorge/Decoding/202504_pipelinetest/v115-3D/spacefish_custom_tissue"
+    cellpose_min_size = 15
+    cellpose_anisotropy = 4
+    cellpose_stitch_threshold = 0.1
+    // Segmentation cleanup
+    censor = true 
+    exclude_border_nuclei = true
+    // Mask refinement
+    refine_seg_model = "${projectDir}/dummy"
+    // Normalization
+    default_p99 = 3
+    do_global_nucleus_normalization = true
+    background_sigma = 9
+    smoothing_sigma = 2
+    // Crop nuclei
+    crop_buffer = 2
+    convexity_threshold = 0.7
+    max_nucleus_area_sqmicron = 500
+    intensity_threshold = 4
+    additional_cleanup = true
+    // Spot Detection
+    spotiflow_model = 'general'
+    spotiflow_min_spot_distance = 3
+    // Filter and normalise spots
+    kneepoint_multiplication_factor = 2.0
+    do_global_normalization = true
+    do_global_filtering = true
+    // Decoding
+    decoding_search_radius = 5
+    decoding_overlap_threshold = 0.1
+    decoding_balance_threshold = 0.1
+    //////////////////////////////////////////
+}
