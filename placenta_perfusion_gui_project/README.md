@@ -22,28 +22,22 @@ Follow these steps in order.
 	  - `conda --version`
 	- If you see a version number, conda is working.
 
-4. Create the environment from `Vasculature/environment.yml`
-	- In the same VS Code terminal, make sure you are in `placenta_perfusion_gui_project`.
-	- Run:
-	  - `conda env create -f ..\Vasculature\environment.yml`
+4. Save `environment.yml` and `placenta_permeability.py` to a folder on your computer. In VS code, go to File -> Open Folder -> Select your folder
 
-5. Activate the environment
+5. Create the environment from `Vasculature/environment.yml`
+	- In your terminal, write the following a press enter: `conda env create -f environment.yml`
+
+6. Activate the environment
 	- Run:
 	  - `conda activate nap-ij`
 
+
 ## Run the GUI
 
-From `placenta_perfusion_gui_project`, with the environment activated:
-- `python placenta_permeability.py`
-
-Or (equivalent):
-- `python -m placenta_permeability`
+- Once you've activated the environment (step 6), type the following in the terminal and press enter: `python -m placenta_permeability`. The GUI should be launched.
 
 ## Notes
 
 - The GUI has a **Time separation (s)** control; it defaults to `180`. This is the time (seconds) between first and last image in your stack
 - Closing the napari window exits the process when run from the terminal.
 
-## Developer
-
-- To regenerate `your_gui.py` from the notebook, use `tools/export_gui_from_notebook.py`.
