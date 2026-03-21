@@ -9,19 +9,28 @@ A single modular codebase for all 3D acinar image quantification:
   - Protein polarisation (BM intensity vs radial distance)
   - Apoptosis quantification (C3+ cell counting)
   - Protein proximity analysis (intensity near dying vs non-dying cells)
+  - Proliferation analysis (EdU+ dividing vs non-dividing cells)
+  - Mitochondria analysis (per-cell mito count, volume, distance from nucleus)
 
 Usage
 -----
 Single image::
 
-    from acinar_analysis import analyse_image
-    results = analyse_image(
-        image_path="path/to/image.tif",
-        analyses=["acinus_shape", "protein_polarisation"],
+    from acinar_analysis import AcinarImage
+
+    img = AcinarImage(
+        "path/to/image.tif",
         dapi_channel=0,
         membrane_channel=2,
         protein_channel=1,
     )
+
+    # Run individual analyses
+    df = img.acinus_shape()
+    df = img.protein_polarisation()
+
+    # Or run several at once
+    results = img.run(["acinus_shape", "protein_polarisation"])
 
 Batch::
 
@@ -42,12 +51,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import math
+import inspect
 import os
 import pathlib
-import random
 import warnings
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
@@ -62,14 +69,13 @@ from skimage.filters import gaussian, threshold_otsu
 from skimage.measure import label, regionprops, regionprops_table
 from skimage.morphology import (
     ball,
-    clear_border,
     dilation,
     erosion,
     opening,
     remove_small_holes,
     remove_small_objects,
 )
-from skimage.segmentation import expand_labels, watershed
+from skimage.segmentation import clear_border, expand_labels, watershed
 from skimage.transform import rescale
 from tifffile import imread
 from tqdm import tqdm
@@ -79,7 +85,7 @@ import tifffile as _tifffile
 warnings.filterwarnings("ignore")
 
 # ---------------------------------------------------------------------------
-#  Valid analysis names
+#  Constants
 # ---------------------------------------------------------------------------
 VALID_ANALYSES = {
     "acinus_shape",
@@ -87,10 +93,14 @@ VALID_ANALYSES = {
     "protein_polarisation",
     "apoptosis",
     "protein_proximity",
+    "proliferation",
+    "mitochondria",
 }
 
+_UNSET = object()  # sentinel for "use instance default"
+
 # ---------------------------------------------------------------------------
-#  Utility helpers
+#  Utility helpers (stateless)
 # ---------------------------------------------------------------------------
 
 
@@ -146,15 +156,6 @@ def read_pixel_size(tif_path: str) -> List[float]:
     return [x, y, z]
 
 
-def _rescale_image(image: np.ndarray, spacing: List[float], scale: float = 0.25
-                   ) -> Tuple[np.ndarray, float]:
-    """Rescale a 3-D volume to isotropic voxels. Returns (rescaled, new_pixel_size)."""
-    scale_z = spacing[2] / spacing[0]
-    rescaled = rescale(image, scale=(scale * scale_z, scale, scale), anti_aliasing=False)
-    new_pixel_size = spacing[0] / scale  # e.g. 4 * original if scale=0.25
-    return rescaled, new_pixel_size
-
-
 # ---------------------------------------------------------------------------
 #  Core acinus segmentation (shared by every analysis)
 # ---------------------------------------------------------------------------
@@ -177,7 +178,9 @@ def segment_acinus(
     new_pixel_size : isotropic voxel size in µm
     flag : string flag describing any issues
     """
-    rescaled, new_pixel_size = _rescale_image(acinus_image, spacing, scale)
+    scale_z = spacing[2] / spacing[0]
+    rescaled = rescale(acinus_image, scale=(scale * scale_z, scale, scale), anti_aliasing=False)
+    new_pixel_size = spacing[0] / scale
 
     clipped = rescaled.clip(
         min=np.quantile(rescaled, clip_low_quantile),
@@ -219,22 +222,6 @@ def segment_acinus(
     return acinus_mask, new_pixel_size, flag
 
 
-def _build_acinus_approximation(
-    image: np.ndarray,
-    dapi_channel: int,
-    membrane_channel: Optional[int],
-    extra_channels: Optional[List[int]] = None,
-) -> np.ndarray:
-    """Sum selected channels (as uint8) to approximate acinus extent."""
-    combined = rescale_intensity(image[:, dapi_channel, :, :]).astype(np.float64)
-    if membrane_channel is not None:
-        combined = combined + rescale_intensity(image[:, membrane_channel, :, :]).astype(np.float64)
-    if extra_channels:
-        for ch in extra_channels:
-            combined = combined + rescale_intensity(image[:, ch, :, :]).astype(np.float64)
-    return combined
-
-
 # ---------------------------------------------------------------------------
 #  Watershed helper (used by apoptosis + cell/nuclear shape)
 # ---------------------------------------------------------------------------
@@ -273,8 +260,7 @@ def watershed_segment(
     props = regionprops_table(seg, properties=("label", "area"))
     vol_thresh = (4 / 3) * np.pi * (min_radius_um / new_pixel_size) ** 3
     keep = props["area"] >= vol_thresh
-    out = util.map_array(seg, props["label"], props["label"] * keep)
-    return out
+    return util.map_array(seg, props["label"], props["label"] * keep)
 
 
 def _watershed_from_seeds(
@@ -310,29 +296,25 @@ def find_neighbours(label_matrix: np.ndarray) -> pd.DataFrame:
     """
     Identify neighbouring labelled regions in a 3-D label matrix.
 
+    Uses vectorised numpy shifts instead of a per-voxel Python loop,
+    giving orders of magnitude speedup on typical volumes.
+
     Returns a DataFrame indexed by cell_label with columns
     ``sum`` (neighbour count), ``external``, ``internal``.
     """
     max_label = int(label_matrix.max())
     neighbours = np.zeros((max_label + 1, max_label + 1), dtype=np.uint8)
-    sz, sy, sx = label_matrix.shape
 
-    for i in range(sz):
-        for j in range(sy):
-            for k in range(sx):
-                v = label_matrix[i, j, k]
-                if i > 0 and label_matrix[i - 1, j, k] != v:
-                    neighbours[label_matrix[i - 1, j, k], v] = 1
-                if i < sz - 1 and label_matrix[i + 1, j, k] != v:
-                    neighbours[label_matrix[i + 1, j, k], v] = 1
-                if j > 0 and label_matrix[i, j - 1, k] != v:
-                    neighbours[label_matrix[i, j - 1, k], v] = 1
-                if j < sy - 1 and label_matrix[i, j + 1, k] != v:
-                    neighbours[label_matrix[i, j + 1, k], v] = 1
-                if k > 0 and label_matrix[i, j, k - 1] != v:
-                    neighbours[label_matrix[i, j, k - 1], v] = 1
-                if k < sx - 1 and label_matrix[i, j, k + 1] != v:
-                    neighbours[label_matrix[i, j, k + 1], v] = 1
+    # For each axis, compare each voxel with its forward neighbour.
+    # Where they differ we record a pair of adjacent labels.
+    for axis in range(3):
+        a = np.take(label_matrix, range(0, label_matrix.shape[axis] - 1), axis=axis)
+        b = np.take(label_matrix, range(1, label_matrix.shape[axis]), axis=axis)
+        diff = a != b
+        pairs_a = a[diff]
+        pairs_b = b[diff]
+        neighbours[pairs_a, pairs_b] = 1
+        neighbours[pairs_b, pairs_a] = 1
 
     df = pd.DataFrame(neighbours)
     df = df.drop(labels=0, axis=1)
@@ -344,119 +326,6 @@ def find_neighbours(label_matrix: np.ndarray) -> pd.DataFrame:
     df = df[["sum", "external", "internal"]]
     df.index.name = "cell_label"
     return df
-
-
-# ---------------------------------------------------------------------------
-#  Analysis 1: Acinus Shape
-# ---------------------------------------------------------------------------
-
-def analyse_acinus_shape(
-    image_path: str,
-    dapi_channel: int = 0,
-    membrane_channel: Optional[int] = 2,
-    extra_channels: Optional[List[int]] = None,
-    smoothing_sigma: float = 4.0,
-) -> pd.DataFrame:
-    """Calculate acinus volume (µm³) and roundness.
-
-    Requires only the raw multi-channel image.
-    """
-    image = rescale_intensity(imread(str(image_path)))
-    spacing = read_pixel_size(str(image_path))
-    acinus_approx = _build_acinus_approximation(image, dapi_channel, membrane_channel, extra_channels)
-    acinus_mask, px, flag = segment_acinus(acinus_approx, spacing, smoothing_sigma=smoothing_sigma)
-
-    regions = regionprops(acinus_mask)
-    if not regions:
-        return pd.DataFrame({"vol_um": [np.nan], "roundness": [np.nan], "flag": ["no_acinus"]})
-    r = regions[0]
-    vol = r.area * px ** 3
-    roundness = r.inertia_tensor_eigvals[2] / r.inertia_tensor_eigvals[0]
-
-    # Check for holes
-    hole_sizes = [rr.area for rr in regionprops(label(util.invert(acinus_mask > 0)))]
-    if len(hole_sizes) > 1 and flag == "None":
-        flag = "hole"
-
-    return pd.DataFrame({"vol_um": [vol], "roundness": [roundness], "flag": [flag]})
-
-
-# ---------------------------------------------------------------------------
-#  Analysis 2: Cell & Nuclear Shape
-# ---------------------------------------------------------------------------
-
-def analyse_cell_nuclear_shape(
-    image_path: str,
-    nuclear_mask_path: str,
-    membrane_mask_path: str,
-    dapi_channel: int = 0,
-    membrane_channel: int = 2,
-    nuclear_channel: Optional[int] = None,
-    smoothing_sigma: float = 4.0,
-) -> pd.DataFrame:
-    """Segment cells/nuclei and compute volume, roundness, and neighbour info.
-
-    **Requires** pre-computed binary nuclear and membrane segmentation masks.
-    """
-    if nuclear_mask_path is None or membrane_mask_path is None:
-        raise ValueError(
-            "Cell/nuclear shape analysis requires both 'nuclear_mask_path' and "
-            "'membrane_mask_path'. Provide paths to binary segmentation TIFFs."
-        )
-
-    image = rescale_intensity(imread(str(image_path)))
-    spacing = read_pixel_size(str(image_path))
-    nuc_ch = nuclear_channel if nuclear_channel is not None else dapi_channel
-    acinus_approx = _build_acinus_approximation(image, nuc_ch, membrane_channel)
-    acinus_mask, px, flag = segment_acinus(acinus_approx, spacing, smoothing_sigma=smoothing_sigma)
-
-    scale_z = spacing[2] / spacing[0]
-    nuclear_mask = imread(str(nuclear_mask_path))
-    membrane_mask = imread(str(membrane_mask_path))
-
-    rescaled_nuc = rescale(nuclear_mask, (0.25 * scale_z, 0.25, 0.25), anti_aliasing=False)
-    rescaled_mem = rescale(membrane_mask, (0.25 * scale_z, 0.25, 0.25), anti_aliasing=False)
-
-    # Restrict to acinus
-    rescaled_nuc = rescaled_nuc * acinus_mask
-    rescaled_mem = rescaled_mem * acinus_mask
-
-    # --- Segment nuclei via watershed ---
-    cleaned_nuc = gaussian(rescaled_nuc, 1)
-    thresh = threshold_otsu(cleaned_nuc)
-    cleaned_nuc = cleaned_nuc > thresh
-    cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=1000)
-
-    distances = ndi.distance_transform_edt(erosion(cleaned_nuc, ball(3)))
-    coords = peak_local_max(distances, min_distance=max(1, int(4 / px)))
-    markers = np.zeros(cleaned_nuc.shape, dtype=np.uint32)
-    idx = tuple(np.round(coords).astype(int).T)
-    markers[idx] = np.arange(len(coords)) + 1
-    markers = dilation(markers, ball(2))
-    seg_nuc = watershed(-distances, markers, mask=cleaned_nuc)
-    seg_nuc = clear_border(seg_nuc)
-
-    # Filter small nuclei
-    props = regionprops_table(seg_nuc, properties=("label", "area"))
-    vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
-    keep = props["area"] >= vol_thresh
-    seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
-
-    # --- Segment membranes via watershed seeded by nuclei ---
-    cleaned_mem = gaussian(rescaled_mem, sigma=1)
-    thresh_m = threshold_otsu(cleaned_mem)
-    cleaned_mem = cleaned_mem > thresh_m
-    _, seg_mem_exp = _watershed_from_seeds(cleaned_mem, seg_nuc, acinus_mask)
-
-    # --- Match nuclei to cells and compute properties ---
-    matching = _match_nuclei_to_cells(seg_nuc, seg_mem_exp, px)
-    matching = matching.merge(find_neighbours(seg_mem_exp).reset_index())
-    matching["flag"] = flag
-
-    if spacing == [1, 1, 1]:
-        matching["flag"] = "wrong_metadata"
-
-    return matching
 
 
 def _match_nuclei_to_cells(
@@ -503,399 +372,731 @@ def _match_nuclei_to_cells(
     return match_df
 
 
-# ---------------------------------------------------------------------------
-#  Analysis 3: Protein Polarisation
-# ---------------------------------------------------------------------------
+# ===========================================================================
+#  AcinarImage — main class
+# ===========================================================================
 
-def analyse_protein_polarisation(
-    image_path: str,
-    dapi_channel: int = 0,
-    membrane_channel: int = 2,
-    protein_channel: int = 1,
-    extra_channels: Optional[List[int]] = None,
-    smoothing_sigma: float = 11.0,
-) -> pd.DataFrame:
-    """Quantify protein intensity as a function of normalised radial distance.
-
-    Requires only the raw multi-channel image (protein channel specified).
+class AcinarImage:
     """
-    if protein_channel is None:
-        raise ValueError(
-            "Protein polarisation analysis requires 'protein_channel' to be set."
-        )
+    Represents a single 3D acinar microscopy image.
 
-    image = rescale_intensity(imread(str(image_path)))
-    spacing = read_pixel_size(str(image_path))
-
-    # Build acinus approximation from DAPI + membrane + protein
-    channels_for_acinus = [protein_channel]
-    if extra_channels:
-        channels_for_acinus.extend(extra_channels)
-    acinus_approx = _build_acinus_approximation(
-        image, dapi_channel, membrane_channel, channels_for_acinus
-    )
-    acinus_mask, px, flag = segment_acinus(
-        acinus_approx, spacing, smoothing_sigma=smoothing_sigma
-    )
-
-    # Rescale protein channel
-    scale_z = spacing[2] / spacing[0]
-    protein_rescaled = rescale(
-        image[:, protein_channel, :, :], (0.25 * scale_z, 0.25, 0.25), anti_aliasing=False
-    )
-    protein_rescaled = protein_rescaled * acinus_mask
-
-    # Distance map normalised by equivalent sphere radius
-    distance = distance_transform_edt(acinus_mask)
-    regions = regionprops(acinus_mask)
-    if not regions:
-        return pd.DataFrame()
-    r = np.cbrt((3 * regions[0].area) / (4 * np.pi))
-    distance = distance / r
-
-    df = pd.DataFrame({
-        "distance_over_radius": np.ravel(distance),
-        "protein_intensity": np.ravel(protein_rescaled),
-    })
-    df["rounded_distance"] = df["distance_over_radius"].round(2)
-    df = df.groupby("rounded_distance", as_index=False)["protein_intensity"].mean()
-    df["flag"] = flag
-    return df
-
-
-# ---------------------------------------------------------------------------
-#  Analysis 4: Apoptosis (C3 counting)
-# ---------------------------------------------------------------------------
-
-def analyse_apoptosis(
-    image_path: str,
-    c3_mask_path: str,
-    dapi_mask_path: str,
-    dapi_channel: int = 0,
-    c3_channel: int = 3,
-    membrane_channel: Optional[int] = None,
-    c3_separation_um: float = 7.0,
-    c3_min_radius_um: float = 1.3,
-    dapi_separation_um: float = 6.0,
-    dapi_min_radius_um: float = 2.0,
-) -> pd.DataFrame:
-    """Count C3-positive (apoptotic) cells and total nuclei per acinus.
-
-    **Requires** pre-computed binary C3 and DAPI segmentation masks.
-    """
-    if c3_mask_path is None or dapi_mask_path is None:
-        raise ValueError(
-            "Apoptosis analysis requires both 'c3_mask_path' and 'dapi_mask_path'. "
-            "Provide paths to binary segmentation TIFFs."
-        )
-
-    image = rescale_intensity(imread(str(image_path)))
-    spacing = read_pixel_size(str(image_path))
-    filename = os.path.basename(str(image_path)).lower()
-
-    extra = [c3_channel]
-    acinus_approx = _build_acinus_approximation(image, dapi_channel, membrane_channel, extra)
-    acinus_mask, px, flag = segment_acinus(acinus_approx, spacing, smoothing_sigma=12.0)
-
-    scale_z = spacing[2] / spacing[0]
-    c3_mask = rescale(imread(str(c3_mask_path)), (0.25 * scale_z, 0.25, 0.25), anti_aliasing=False)
-    dapi_mask = rescale(imread(str(dapi_mask_path)), (0.25 * scale_z, 0.25, 0.25), anti_aliasing=False)
-
-    c3_labels = watershed_segment(c3_mask, acinus_mask, px, c3_separation_um, c3_min_radius_um)
-    dapi_labels = watershed_segment(dapi_mask, acinus_mask, px, dapi_separation_um, dapi_min_radius_um)
-
-    # Distance map (normalised 0-1)
-    dist = distance_transform_edt(acinus_mask > 0) * px
-    dist_scaled = np.interp(dist, (dist.min(), dist.max()), (0, 1))
-
-    # Acinus-level measurements
-    acinus_regions = regionprops(acinus_mask)
-    acinus_vol = acinus_regions[0].area * px ** 3 if acinus_regions else np.nan
-    acinus_round = (
-        acinus_regions[0].inertia_tensor_eigvals[2] / acinus_regions[0].inertia_tensor_eigvals[0]
-        if acinus_regions else np.nan
-    )
-
-    c3_props = pd.DataFrame(regionprops_table(c3_labels, properties=("label", "area", "centroid")))
-    if c3_props.empty:
-        c3_props = pd.DataFrame({
-            "label": ["no_c3"], "centroid-0": [np.nan], "centroid-1": [np.nan],
-            "centroid-2": [np.nan], "c3_volume_um": [np.nan],
-            "normalised_distance": [np.nan],
-        })
-    else:
-        c3_props["c3_volume_um"] = c3_props["area"] * px ** 3
-        c3_props["normalised_distance"] = c3_props.apply(
-            lambda row: dist_scaled[
-                int(round(row["centroid-0"])),
-                int(round(row["centroid-1"])),
-                int(round(row["centroid-2"])),
-            ],
-            axis=1,
-        )
-        c3_props.drop("area", axis=1, inplace=True)
-
-    c3_props["acinus_volume_um"] = acinus_vol
-    c3_props["acinus_roundness"] = acinus_round
-    c3_props["number_of_nuclei"] = pd.DataFrame(
-        regionprops_table(dapi_labels, properties=("label",))
-    ).shape[0]
-    c3_props["flag"] = flag
-    return c3_props
-
-
-# ---------------------------------------------------------------------------
-#  Analysis 5: Protein Proximity
-# ---------------------------------------------------------------------------
-
-def analyse_protein_proximity(
-    image_path: str,
-    c3_mask_path: str,
-    dapi_mask_path: str,
-    dapi_channel: int = 0,
-    c3_channel: int = 3,
-    membrane_channel: Optional[int] = None,
-    proximity_protein_channel: int = 1,
-    search_radius_um: float = 5.0,
-    c3_separation_um: float = 7.0,
-    c3_min_radius_um: float = 3.0,
-    dapi_separation_um: float = 6.0,
-    dapi_min_radius_um: float = 3.0,
-) -> pd.DataFrame:
-    """Compare protein intensity near dying vs non-dying cells.
-
-    **Requires** binary C3 and DAPI masks, plus a proximity protein channel.
-    """
-    if c3_mask_path is None or dapi_mask_path is None:
-        raise ValueError(
-            "Protein proximity analysis requires both 'c3_mask_path' and 'dapi_mask_path'."
-        )
-    if proximity_protein_channel is None:
-        raise ValueError(
-            "Protein proximity analysis requires 'proximity_protein_channel' to be set."
-        )
-
-    image = rescale_intensity(imread(str(image_path)))
-    spacing = read_pixel_size(str(image_path))
-    filename = os.path.basename(str(image_path)).lower()
-
-    extra = [c3_channel]
-    acinus_approx = _build_acinus_approximation(image, dapi_channel, membrane_channel, extra)
-    acinus_mask, px, flag = segment_acinus(acinus_approx, spacing, smoothing_sigma=12.0)
-
-    scale_z = spacing[2] / spacing[0]
-    c3_raw = imread(str(c3_mask_path))
-    dapi_raw = imread(str(dapi_mask_path))
-    c3_mask = rescale(c3_raw, (0.25 * scale_z, 0.25, 0.25), anti_aliasing=False)
-    # Live cells = DAPI minus dilated C3
-    live_cells = rescale(
-        (dapi_raw - dilation(c3_raw, ball(2))),
-        (0.25 * scale_z, 0.25, 0.25),
-        anti_aliasing=False,
-    )
-    live_cells = np.where(live_cells > 1, 0, live_cells)
-
-    c3_labels = watershed_segment(c3_mask, acinus_mask, px, c3_separation_um, c3_min_radius_um)
-    live_labels = watershed_segment(live_cells, acinus_mask, px, dapi_separation_um, dapi_min_radius_um)
-
-    # Distance map (normalised 0-1)
-    dist = distance_transform_edt(acinus_mask > 0)
-    dist_scaled = np.interp(dist, (dist.min(), dist.max()), (0, 1))
-
-    acinus_regions = regionprops(acinus_mask)
-    acinus_vol = acinus_regions[0].area * px ** 3 if acinus_regions else np.nan
-    acinus_round = (
-        acinus_regions[0].inertia_tensor_eigvals[2] / acinus_regions[0].inertia_tensor_eigvals[0]
-        if acinus_regions else np.nan
-    )
-
-    # Rescale proximity protein
-    prox_img = rescale(
-        image[:, proximity_protein_channel, :, :],
-        (0.25 * scale_z, 0.25, 0.25),
-        anti_aliasing=False,
-    )
-
-    # Build dying / non-dying info
-    dying_info = pd.DataFrame(regionprops_table(c3_labels, properties=("label", "area", "centroid")))
-    dying_info["nuclear_or_c3_volume_um3"] = dying_info["area"] * px ** 3
-    dying_info.drop("area", axis=1, inplace=True)
-    dying_info["dying"] = "Y"
-
-    live_info = pd.DataFrame(regionprops_table(live_labels, properties=("label", "area", "centroid")))
-    live_info["nuclear_or_c3_volume_um3"] = live_info["area"] * px ** 3
-    live_info.drop("area", axis=1, inplace=True)
-    live_info["dying"] = "N"
-
-    all_cells = pd.concat([dying_info, live_info], ignore_index=True)
-    all_cells["acinus_volume_um3"] = acinus_vol
-    all_cells["acinus_roundness"] = acinus_round
-    all_cells["number_dying"] = dying_info.shape[0]
-    all_cells["number_not_dying"] = live_info.shape[0]
-
-    if not all_cells.empty and "centroid-0" in all_cells.columns:
-        all_cells["normalised_distance"] = all_cells.apply(
-            lambda row: dist_scaled[
-                int(round(row["centroid-0"])),
-                int(round(row["centroid-1"])),
-                int(round(row["centroid-2"])),
-            ]
-            if pd.notna(row["centroid-0"])
-            else np.nan,
-            axis=1,
-        )
-
-    # --- Combine labels and measure proximity protein ---
-    combined = live_labels.copy()
-    if c3_labels.max() > 0:
-        offset = live_labels.max()
-        c3_offset = np.where(c3_labels > 0, c3_labels + offset, 0)
-        combined = np.where(combined == 0, c3_offset, combined)
-    estimated_territories = acinus_mask * expand_labels(combined, distance=20)
-
-    search_px = max(1, int(search_radius_um / px))
-    prox_rows = []
-    for region in regionprops(estimated_territories):
-        cell_mask = estimated_territories == region.label
-        expanded = expand_labels(cell_mask.astype(np.uint8), distance=search_px) > 0
-        in_cell = float(prox_img[cell_mask].sum())
-        in_nbhd = float(prox_img[expanded].sum())
-        cell_vol = int(cell_mask.sum())
-        nbhd_vol = int(expanded.sum())
-        prox_rows.append({
-            "label": region.label,
-            "proximity_intensity_in_cell": in_cell,
-            "proximity_intensity_around_cell": in_nbhd - in_cell,
-            "proximity_intensity_total_neighborhood": in_nbhd,
-            "proximity_mean_intensity_in_cell": in_cell / cell_vol if cell_vol else 0,
-            "proximity_mean_intensity_neighborhood": in_nbhd / nbhd_vol if nbhd_vol else 0,
-            "estimated_cell_territory_volume_um3": cell_vol * px ** 3,
-            "proximity_neighborhood_volume_um3": nbhd_vol * px ** 3,
-        })
-
-    if prox_rows:
-        all_cells = all_cells.merge(pd.DataFrame(prox_rows), on="label", how="left")
-
-    all_cells["flag"] = flag
-    return all_cells
-
-
-# ---------------------------------------------------------------------------
-#  Unified single-image entry point
-# ---------------------------------------------------------------------------
-
-def analyse_image(
-    image_path: str,
-    analyses: List[str],
-    *,
-    dapi_channel: int = 0,
-    membrane_channel: Optional[int] = 2,
-    protein_channel: Optional[int] = None,
-    c3_channel: Optional[int] = None,
-    proximity_protein_channel: Optional[int] = None,
-    nuclear_mask_path: Optional[str] = None,
-    membrane_mask_path: Optional[str] = None,
-    c3_mask_path: Optional[str] = None,
-    dapi_mask_path: Optional[str] = None,
-    extra_acinus_channels: Optional[List[int]] = None,
-    smoothing_sigma: Optional[float] = None,
-    search_radius_um: float = 5.0,
-    c3_separation_um: float = 7.0,
-    c3_min_radius_um: float = 1.3,
-    dapi_separation_um: float = 6.0,
-    dapi_min_radius_um: float = 2.0,
-) -> Dict[str, pd.DataFrame]:
-    """
-    Run one or more analyses on a single 3-D acinar image.
+    Loads image data and metadata once, then exposes analysis methods
+    that share the cached state.
 
     Parameters
     ----------
-    image_path : str
+    image_path : str or Path
         Path to the multi-channel TIFF stack.
-    analyses : list of str
-        Which analyses to run. Choose from:
-        ``"acinus_shape"``, ``"cell_nuclear_shape"``,
-        ``"protein_polarisation"``, ``"apoptosis"``,
-        ``"protein_proximity"``.
-    dapi_channel, membrane_channel : int
-        Channel indices in the image.
-    protein_channel : int, optional
+    dapi_channel : int
+        DAPI channel index.
+    membrane_channel : int or None
+        Membrane channel index (None = no membrane channel).
+    protein_channel : int or None
         Channel for protein polarisation analysis.
-    c3_channel : int, optional
-        Channel for C3 / apoptosis analysis.
-    proximity_protein_channel : int, optional
+    c3_channel : int
+        Channel for C3 / apoptosis analyses.
+    edu_channel : int or None
+        Channel for EdU / proliferation analysis.
+    proximity_protein_channel : int or None
         Channel for the proximity-protein analysis.
-    nuclear_mask_path, membrane_mask_path : str, optional
-        Paths to binary segmentation masks (required for cell_nuclear_shape).
-    c3_mask_path, dapi_mask_path : str, optional
-        Paths to binary segmentation masks (required for apoptosis / protein_proximity).
-    search_radius_um : float
-        Search radius for proximity analysis.
-
-    Returns
-    -------
-    dict mapping analysis name -> DataFrame of results.
+    nuclear_mask_path, membrane_mask_path : str or None
+        Paths to binary segmentation masks (for cell_nuclear_shape).
+    c3_mask_path, dapi_mask_path : str or None
+        Paths to binary segmentation masks (for apoptosis / protein_proximity).
+    edu_mask_path : str or None
+        Path to binary EdU segmentation mask (for proliferation).
+    mito_channel : int or None
+        Channel for mitochondria analysis.
+    mito_mask_path : str or None
+        Path to binary mitochondria segmentation mask.
+    extra_acinus_channels : list of int or None
+        Additional channels to include in acinus approximation.
     """
-    unknown = set(analyses) - VALID_ANALYSES
-    if unknown:
-        raise ValueError(f"Unknown analyses: {unknown}. Choose from {VALID_ANALYSES}")
 
-    results: Dict[str, pd.DataFrame] = {}
-    filename = os.path.basename(str(image_path)).lower()
+    def __init__(
+        self,
+        image_path,
+        *,
+        dapi_channel=0,
+        membrane_channel=2,
+        protein_channel=None,
+        c3_channel=3,
+        edu_channel=None,
+        mito_channel=None,
+        proximity_protein_channel=None,
+        nuclear_mask_path=None,
+        membrane_mask_path=None,
+        c3_mask_path=None,
+        dapi_mask_path=None,
+        edu_mask_path=None,
+        mito_mask_path=None,
+        extra_acinus_channels=None,
+    ):
+        self.image_path = str(image_path)
+        self.filename = os.path.basename(self.image_path).lower()
 
-    for name in analyses:
-        try:
-            if name == "acinus_shape":
-                sigma = smoothing_sigma if smoothing_sigma is not None else 4.0
-                df = analyse_acinus_shape(
-                    image_path, dapi_channel, membrane_channel,
-                    extra_acinus_channels, sigma,
+        # Channel configuration
+        self.dapi_channel = dapi_channel
+        self.membrane_channel = membrane_channel
+        self.protein_channel = protein_channel
+        self.c3_channel = c3_channel
+        self.edu_channel = edu_channel
+        self.mito_channel = mito_channel
+        self.proximity_protein_channel = proximity_protein_channel
+        self.extra_acinus_channels = extra_acinus_channels
+
+        # Mask paths
+        self.nuclear_mask_path = nuclear_mask_path
+        self.membrane_mask_path = membrane_mask_path
+        self.c3_mask_path = c3_mask_path
+        self.dapi_mask_path = dapi_mask_path
+        self.edu_mask_path = edu_mask_path
+        self.mito_mask_path = mito_mask_path
+
+        # Lazy-loaded shared state
+        self._image = None
+        self._spacing = None
+
+    # -- Lazy properties --------------------------------------------------
+
+    @property
+    def image(self):
+        """Intensity-rescaled multi-channel image (loaded once)."""
+        if self._image is None:
+            self._image = rescale_intensity(imread(self.image_path))
+        return self._image
+
+    @property
+    def spacing(self):
+        """[x, y, z] pixel spacing in µm (read once from TIFF metadata)."""
+        if self._spacing is None:
+            self._spacing = read_pixel_size(self.image_path)
+        return self._spacing
+
+    @property
+    def scale_z(self):
+        """Z-to-XY scale ratio derived from spacing."""
+        return self.spacing[2] / self.spacing[0]
+
+    # -- Internal helpers -------------------------------------------------
+
+    def _rescale_volume(self, volume, scale=0.25):
+        """Rescale a 3-D volume to isotropic voxels at *scale*."""
+        return rescale(volume, (scale * self.scale_z, scale, scale), anti_aliasing=False)
+
+    def _build_acinus_approx(self, dapi_ch=_UNSET, membrane_ch=_UNSET,
+                             extra_channels=_UNSET):
+        """Sum selected channels to approximate acinus extent."""
+        if dapi_ch is _UNSET:
+            dapi_ch = self.dapi_channel
+        if membrane_ch is _UNSET:
+            membrane_ch = self.membrane_channel
+        if extra_channels is _UNSET:
+            extra_channels = self.extra_acinus_channels
+
+        combined = rescale_intensity(self.image[:, dapi_ch, :, :]).astype(np.float64)
+        if membrane_ch is not None:
+            combined += rescale_intensity(self.image[:, membrane_ch, :, :]).astype(np.float64)
+        if extra_channels:
+            for ch in extra_channels:
+                combined += rescale_intensity(self.image[:, ch, :, :]).astype(np.float64)
+        return combined
+
+    def _segment(self, acinus_approx, smoothing_sigma=4.0):
+        """Segment acinus and return (mask, pixel_size, flag)."""
+        return segment_acinus(acinus_approx, self.spacing,
+                              smoothing_sigma=smoothing_sigma)
+
+    # =====================================================================
+    #  Analysis methods
+    # =====================================================================
+
+    def acinus_shape(self, smoothing_sigma=4.0):
+        """Calculate acinus volume (µm³) and roundness."""
+        acinus_approx = self._build_acinus_approx()
+        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+
+        regions = regionprops(acinus_mask)
+        if not regions:
+            return pd.DataFrame({"vol_um": [np.nan], "roundness": [np.nan],
+                                 "flag": ["no_acinus"]})
+
+        r = regions[0]
+        vol = r.area * px ** 3
+        roundness = r.inertia_tensor_eigvals[2] / r.inertia_tensor_eigvals[0]
+
+        hole_sizes = [rr.area for rr in regionprops(label(util.invert(acinus_mask > 0)))]
+        if len(hole_sizes) > 1 and flag == "None":
+            flag = "hole"
+
+        return pd.DataFrame({"vol_um": [vol], "roundness": [roundness], "flag": [flag]})
+
+    def cell_nuclear_shape(self, smoothing_sigma=4.0):
+        """Segment cells/nuclei and compute volume, roundness, and neighbour info.
+
+        Requires ``nuclear_mask_path`` and ``membrane_mask_path`` to be set.
+        """
+        if self.nuclear_mask_path is None or self.membrane_mask_path is None:
+            raise ValueError(
+                "cell_nuclear_shape requires both 'nuclear_mask_path' and "
+                "'membrane_mask_path'. Set them on the AcinarImage instance."
+            )
+
+        acinus_approx = self._build_acinus_approx()
+        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+
+        nuclear_mask = imread(str(self.nuclear_mask_path))
+        membrane_mask = imread(str(self.membrane_mask_path))
+        rescaled_nuc = self._rescale_volume(nuclear_mask)
+        rescaled_mem = self._rescale_volume(membrane_mask)
+
+        # Restrict to acinus
+        rescaled_nuc = rescaled_nuc * acinus_mask
+        rescaled_mem = rescaled_mem * acinus_mask
+
+        # --- Segment nuclei via watershed ---
+        cleaned_nuc = gaussian(rescaled_nuc, 1)
+        thresh = threshold_otsu(cleaned_nuc)
+        cleaned_nuc = cleaned_nuc > thresh
+        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=1000)
+
+        distances = ndi.distance_transform_edt(erosion(cleaned_nuc, ball(3)))
+        coords = peak_local_max(distances, min_distance=max(1, int(4 / px)))
+        markers = np.zeros(cleaned_nuc.shape, dtype=np.uint32)
+        idx = tuple(np.round(coords).astype(int).T)
+        markers[idx] = np.arange(len(coords)) + 1
+        markers = dilation(markers, ball(2))
+        seg_nuc = watershed(-distances, markers, mask=cleaned_nuc)
+        seg_nuc = clear_border(seg_nuc)
+
+        # Filter small nuclei
+        props = regionprops_table(seg_nuc, properties=("label", "area"))
+        vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
+        keep = props["area"] >= vol_thresh
+        seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
+
+        # --- Segment membranes via watershed seeded by nuclei ---
+        cleaned_mem = gaussian(rescaled_mem, sigma=1)
+        thresh_m = threshold_otsu(cleaned_mem)
+        cleaned_mem = cleaned_mem > thresh_m
+        _, seg_mem_exp = _watershed_from_seeds(cleaned_mem, seg_nuc, acinus_mask)
+
+        # --- Match nuclei to cells and compute properties ---
+        matching = _match_nuclei_to_cells(seg_nuc, seg_mem_exp, px)
+        matching = matching.merge(find_neighbours(seg_mem_exp).reset_index())
+        matching["flag"] = flag
+
+        if self.spacing == [1, 1, 1]:
+            matching["flag"] = "wrong_metadata"
+
+        return matching
+
+    def protein_polarisation(self, smoothing_sigma=11.0):
+        """Quantify protein intensity as a function of normalised radial distance.
+
+        Requires ``protein_channel`` to be set.
+        """
+        if self.protein_channel is None:
+            raise ValueError(
+                "protein_polarisation requires 'protein_channel' to be set."
+            )
+
+        extra = [self.protein_channel]
+        if self.extra_acinus_channels:
+            extra.extend(self.extra_acinus_channels)
+        acinus_approx = self._build_acinus_approx(extra_channels=extra)
+        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+
+        protein_rescaled = self._rescale_volume(
+            self.image[:, self.protein_channel, :, :]
+        )
+        protein_rescaled = protein_rescaled * acinus_mask
+
+        # Distance map normalised by equivalent sphere radius
+        distance = distance_transform_edt(acinus_mask)
+        regions = regionprops(acinus_mask)
+        if not regions:
+            return pd.DataFrame()
+        r = np.cbrt((3 * regions[0].area) / (4 * np.pi))
+        distance = distance / r
+
+        df = pd.DataFrame({
+            "distance_over_radius": np.ravel(distance),
+            "protein_intensity": np.ravel(protein_rescaled),
+        })
+        df["rounded_distance"] = df["distance_over_radius"].round(2)
+        df = df.groupby("rounded_distance", as_index=False)["protein_intensity"].mean()
+        df["flag"] = flag
+        return df
+
+    def apoptosis(self, c3_separation_um=7.0, c3_min_radius_um=1.3,
+                  dapi_separation_um=6.0, dapi_min_radius_um=2.0):
+        """Count C3-positive (apoptotic) cells and total nuclei per acinus.
+
+        Requires ``c3_mask_path`` and ``dapi_mask_path`` to be set.
+        """
+        if self.c3_mask_path is None or self.dapi_mask_path is None:
+            raise ValueError(
+                "apoptosis requires both 'c3_mask_path' and 'dapi_mask_path'."
+            )
+
+        extra = [self.c3_channel]
+        acinus_approx = self._build_acinus_approx(extra_channels=extra)
+        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma=12.0)
+
+        c3_mask = self._rescale_volume(imread(str(self.c3_mask_path)))
+        dapi_mask = self._rescale_volume(imread(str(self.dapi_mask_path)))
+
+        c3_labels = watershed_segment(c3_mask, acinus_mask, px,
+                                      c3_separation_um, c3_min_radius_um)
+        dapi_labels = watershed_segment(dapi_mask, acinus_mask, px,
+                                        dapi_separation_um, dapi_min_radius_um)
+
+        # Distance map (normalised 0-1)
+        dist = distance_transform_edt(acinus_mask > 0) * px
+        dist_scaled = np.interp(dist, (dist.min(), dist.max()), (0, 1))
+
+        # Acinus-level measurements
+        acinus_regions = regionprops(acinus_mask)
+        acinus_vol = acinus_regions[0].area * px ** 3 if acinus_regions else np.nan
+        acinus_round = (
+            acinus_regions[0].inertia_tensor_eigvals[2]
+            / acinus_regions[0].inertia_tensor_eigvals[0]
+            if acinus_regions else np.nan
+        )
+
+        c3_props = pd.DataFrame(
+            regionprops_table(c3_labels, properties=("label", "area", "centroid"))
+        )
+        if c3_props.empty:
+            c3_props = pd.DataFrame({
+                "label": ["no_c3"], "centroid-0": [np.nan], "centroid-1": [np.nan],
+                "centroid-2": [np.nan], "c3_volume_um": [np.nan],
+                "normalised_distance": [np.nan],
+            })
+        else:
+            c3_props["c3_volume_um"] = c3_props["area"] * px ** 3
+            c3_props["normalised_distance"] = c3_props.apply(
+                lambda row: dist_scaled[
+                    int(round(row["centroid-0"])),
+                    int(round(row["centroid-1"])),
+                    int(round(row["centroid-2"])),
+                ],
+                axis=1,
+            )
+            c3_props.drop("area", axis=1, inplace=True)
+
+        c3_props["acinus_volume_um"] = acinus_vol
+        c3_props["acinus_roundness"] = acinus_round
+        c3_props["number_of_nuclei"] = pd.DataFrame(
+            regionprops_table(dapi_labels, properties=("label",))
+        ).shape[0]
+        c3_props["flag"] = flag
+        return c3_props
+
+    def protein_proximity(self, search_radius_um=5.0,
+                          c3_separation_um=7.0, c3_min_radius_um=3.0,
+                          dapi_separation_um=6.0, dapi_min_radius_um=3.0):
+        """Compare protein intensity near dying vs non-dying cells.
+
+        Requires ``c3_mask_path``, ``dapi_mask_path``, and
+        ``proximity_protein_channel`` to be set.
+        """
+        if self.c3_mask_path is None or self.dapi_mask_path is None:
+            raise ValueError(
+                "protein_proximity requires both 'c3_mask_path' and 'dapi_mask_path'."
+            )
+        if self.proximity_protein_channel is None:
+            raise ValueError(
+                "protein_proximity requires 'proximity_protein_channel' to be set."
+            )
+
+        extra = [self.c3_channel]
+        acinus_approx = self._build_acinus_approx(extra_channels=extra)
+        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma=12.0)
+
+        c3_raw = imread(str(self.c3_mask_path))
+        dapi_raw = imread(str(self.dapi_mask_path))
+        c3_mask = self._rescale_volume(c3_raw)
+        # Live cells = DAPI minus dilated C3
+        live_cells = self._rescale_volume(dapi_raw - dilation(c3_raw, ball(2)))
+        live_cells = np.where(live_cells > 1, 0, live_cells)
+
+        c3_labels = watershed_segment(c3_mask, acinus_mask, px,
+                                      c3_separation_um, c3_min_radius_um)
+        live_labels = watershed_segment(live_cells, acinus_mask, px,
+                                        dapi_separation_um, dapi_min_radius_um)
+
+        # Distance map (normalised 0-1)
+        dist = distance_transform_edt(acinus_mask > 0)
+        dist_scaled = np.interp(dist, (dist.min(), dist.max()), (0, 1))
+
+        acinus_regions = regionprops(acinus_mask)
+        acinus_vol = acinus_regions[0].area * px ** 3 if acinus_regions else np.nan
+        acinus_round = (
+            acinus_regions[0].inertia_tensor_eigvals[2]
+            / acinus_regions[0].inertia_tensor_eigvals[0]
+            if acinus_regions else np.nan
+        )
+
+        # Rescale proximity protein
+        prox_img = self._rescale_volume(
+            self.image[:, self.proximity_protein_channel, :, :]
+        )
+
+        # Build dying / non-dying info
+        dying_info = pd.DataFrame(
+            regionprops_table(c3_labels, properties=("label", "area", "centroid"))
+        )
+        dying_info["nuclear_or_c3_volume_um3"] = dying_info["area"] * px ** 3
+        dying_info.drop("area", axis=1, inplace=True)
+        dying_info["dying"] = "Y"
+
+        live_info = pd.DataFrame(
+            regionprops_table(live_labels, properties=("label", "area", "centroid"))
+        )
+        live_info["nuclear_or_c3_volume_um3"] = live_info["area"] * px ** 3
+        live_info.drop("area", axis=1, inplace=True)
+        live_info["dying"] = "N"
+
+        all_cells = pd.concat([dying_info, live_info], ignore_index=True)
+        all_cells["acinus_volume_um3"] = acinus_vol
+        all_cells["acinus_roundness"] = acinus_round
+        all_cells["number_dying"] = dying_info.shape[0]
+        all_cells["number_not_dying"] = live_info.shape[0]
+
+        if not all_cells.empty and "centroid-0" in all_cells.columns:
+            all_cells["normalised_distance"] = all_cells.apply(
+                lambda row: dist_scaled[
+                    int(round(row["centroid-0"])),
+                    int(round(row["centroid-1"])),
+                    int(round(row["centroid-2"])),
+                ]
+                if pd.notna(row["centroid-0"])
+                else np.nan,
+                axis=1,
+            )
+
+        # --- Combine labels and measure proximity protein ---
+        combined = live_labels.copy()
+        if c3_labels.max() > 0:
+            offset = live_labels.max()
+            c3_offset = np.where(c3_labels > 0, c3_labels + offset, 0)
+            combined = np.where(combined == 0, c3_offset, combined)
+        estimated_territories = acinus_mask * expand_labels(combined, distance=20)
+
+        search_px = max(1, int(search_radius_um / px))
+        prox_rows = []
+        for region in regionprops(estimated_territories):
+            cell_mask = estimated_territories == region.label
+            expanded = expand_labels(cell_mask.astype(np.uint8), distance=search_px) > 0
+            in_cell = float(prox_img[cell_mask].sum())
+            in_nbhd = float(prox_img[expanded].sum())
+            cell_vol = int(cell_mask.sum())
+            nbhd_vol = int(expanded.sum())
+            prox_rows.append({
+                "label": region.label,
+                "proximity_intensity_in_cell": in_cell,
+                "proximity_intensity_around_cell": in_nbhd - in_cell,
+                "proximity_intensity_total_neighborhood": in_nbhd,
+                "proximity_mean_intensity_in_cell": in_cell / cell_vol if cell_vol else 0,
+                "proximity_mean_intensity_neighborhood": in_nbhd / nbhd_vol if nbhd_vol else 0,
+                "estimated_cell_territory_volume_um3": cell_vol * px ** 3,
+                "proximity_neighborhood_volume_um3": nbhd_vol * px ** 3,
+            })
+
+        if prox_rows:
+            all_cells = all_cells.merge(pd.DataFrame(prox_rows), on="label", how="left")
+
+        all_cells["flag"] = flag
+        return all_cells
+
+    def proliferation(self, edu_separation_um=4.0, edu_min_radius_um=2.0,
+                      dapi_separation_um=4.0, dapi_min_radius_um=2.0):
+        """Count EdU-positive (dividing) vs non-dividing cells per acinus.
+
+        Dividing cells are identified from the EdU mask.  Non-dividing cells
+        are DAPI-positive but EdU-negative (DAPI mask minus dilated EdU mask).
+
+        Requires ``edu_mask_path`` and ``dapi_mask_path`` to be set.
+        The ``edu_channel`` is used (along with DAPI) to build the acinus
+        approximation.
+        """
+        if self.edu_mask_path is None or self.dapi_mask_path is None:
+            raise ValueError(
+                "proliferation requires both 'edu_mask_path' and 'dapi_mask_path'."
+            )
+        if self.edu_channel is None:
+            raise ValueError(
+                "proliferation requires 'edu_channel' to be set."
+            )
+
+        extra = [self.edu_channel]
+        acinus_approx = self._build_acinus_approx(extra_channels=extra)
+        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma=6.0)
+
+        edu_mask = self._rescale_volume(imread(str(self.edu_mask_path)))
+        dapi_mask = self._rescale_volume(imread(str(self.dapi_mask_path)))
+
+        # Non-dividing = DAPI minus dilated EdU
+        non_dividing_mask = self._rescale_volume(
+            imread(str(self.dapi_mask_path)) - dilation(imread(str(self.edu_mask_path)), ball(2))
+        )
+        non_dividing_mask = np.where(non_dividing_mask > 1, 0, non_dividing_mask)
+
+        dividing_labels = watershed_segment(
+            edu_mask, acinus_mask, px, edu_separation_um, edu_min_radius_um
+        )
+        non_dividing_labels = watershed_segment(
+            non_dividing_mask, acinus_mask, px, dapi_separation_um, dapi_min_radius_um
+        )
+
+        # Distance map (normalised 0-1)
+        dist = distance_transform_edt(acinus_mask > 0)
+        dist_scaled = np.interp(dist, (dist.min(), dist.max()), (0, 1))
+
+        # Acinus-level measurements
+        acinus_regions = regionprops(acinus_mask)
+        acinus_vol = acinus_regions[0].area * px ** 3 if acinus_regions else np.nan
+        acinus_round = (
+            acinus_regions[0].inertia_tensor_eigvals[2]
+            / acinus_regions[0].inertia_tensor_eigvals[0]
+            if acinus_regions else np.nan
+        )
+
+        dividing_info = pd.DataFrame(
+            regionprops_table(dividing_labels, properties=("label", "area", "centroid"))
+        )
+        dividing_info["dividing"] = "Y"
+        number_dividing = dividing_info.shape[0]
+
+        non_dividing_info = pd.DataFrame(
+            regionprops_table(non_dividing_labels, properties=("label", "area", "centroid"))
+        )
+        non_dividing_info["dividing"] = "N"
+        number_not_dividing = non_dividing_info.shape[0]
+
+        all_cells = pd.concat([dividing_info, non_dividing_info], ignore_index=True)
+        all_cells["acinus_volume_um3"] = acinus_vol
+        all_cells["acinus_roundness"] = acinus_round
+        all_cells["number_dividing"] = number_dividing
+        all_cells["number_not_dividing"] = number_not_dividing
+
+        if all_cells.empty:
+            all_cells = pd.DataFrame({
+                "label": [np.nan], "centroid-0": [np.nan],
+                "centroid-1": [np.nan], "centroid-2": [np.nan],
+                "normalised_distance": [np.nan],
+                "dividing": [np.nan],
+            })
+        else:
+            all_cells["volume_um3"] = all_cells["area"] * px ** 3
+            all_cells.drop("area", axis=1, inplace=True)
+            all_cells["normalised_distance"] = all_cells.apply(
+                lambda row: dist_scaled[
+                    int(round(row["centroid-0"])),
+                    int(round(row["centroid-1"])),
+                    int(round(row["centroid-2"])),
+                ]
+                if pd.notna(row["centroid-0"])
+                else np.nan,
+                axis=1,
+            )
+
+        all_cells["flag"] = flag
+        return all_cells
+
+    def mitochondria(self, smoothing_sigma=4.0,
+                     mito_min_object_size=10):
+        """Per-cell mitochondria count, volume, and distance from nucleus.
+
+        Requires ``nuclear_mask_path``, ``membrane_mask_path``, and
+        ``mito_mask_path`` to be set.
+        """
+        if self.nuclear_mask_path is None or self.membrane_mask_path is None:
+            raise ValueError(
+                "mitochondria requires 'nuclear_mask_path' and 'membrane_mask_path'."
+            )
+        if self.mito_mask_path is None:
+            raise ValueError(
+                "mitochondria requires 'mito_mask_path' to be set."
+            )
+
+        acinus_approx = self._build_acinus_approx()
+        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+
+        # Rescale masks
+        rescaled_nuc = self._rescale_volume(imread(str(self.nuclear_mask_path)))
+        rescaled_mem = self._rescale_volume(imread(str(self.membrane_mask_path)))
+        rescaled_nuc = rescaled_nuc * acinus_mask
+        rescaled_mem = rescaled_mem * acinus_mask
+
+        # Rescale and label the mito mask
+        mito_raw = imread(str(self.mito_mask_path))
+        mito_labelled = label(mito_raw)
+        mito_labelled = remove_small_objects(mito_labelled, min_size=mito_min_object_size)
+        mito_labelled = self._rescale_volume(
+            mito_labelled.astype(np.uint16), scale=0.25
+        ).astype(np.int32)
+
+        # --- Segment nuclei via watershed (same as cell_nuclear_shape) ---
+        cleaned_nuc = gaussian(rescaled_nuc, 1)
+        thresh = threshold_otsu(cleaned_nuc)
+        cleaned_nuc = cleaned_nuc > thresh
+        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=1000)
+
+        distances_nuc = ndi.distance_transform_edt(erosion(cleaned_nuc, ball(3)))
+        coords = peak_local_max(distances_nuc, min_distance=max(1, int(4 / px)))
+        markers = np.zeros(cleaned_nuc.shape, dtype=np.uint32)
+        idx = tuple(np.round(coords).astype(int).T)
+        markers[idx] = np.arange(len(coords)) + 1
+        markers = dilation(markers, ball(2))
+        seg_nuc = watershed(-distances_nuc, markers, mask=cleaned_nuc)
+        seg_nuc = clear_border(seg_nuc)
+
+        props = regionprops_table(seg_nuc, properties=("label", "area"))
+        vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
+        keep = props["area"] >= vol_thresh
+        seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
+
+        # --- Segment cells via membrane watershed seeded by nuclei ---
+        cleaned_mem = gaussian(rescaled_mem, sigma=1)
+        thresh_m = threshold_otsu(cleaned_mem)
+        cleaned_mem = cleaned_mem > thresh_m
+        _, seg_mem_exp = _watershed_from_seeds(cleaned_mem, seg_nuc, acinus_mask)
+
+        # --- Match nuclei to cells ---
+        matching = _match_nuclei_to_cells(seg_nuc, seg_mem_exp, px)
+
+        # --- Mito properties ---
+        mito_props = pd.DataFrame(
+            regionprops_table(mito_labelled, properties=("label", "area"))
+        )
+        vx3 = px ** 3
+
+        mito_rows = []
+        for _, row in matching.iterrows():
+            nuc_idx = int(row["nucleus_label"])
+            cell_idx = int(row["cell_label"])
+
+            # Mito that overlap with this nucleus's watershed region
+            mito_in_nuc = np.unique(mito_labelled * (seg_nuc == nuc_idx))
+            mito_in_nuc = mito_in_nuc[mito_in_nuc > 0]
+            n_mito = len(mito_in_nuc)
+            total_mito_vol = float(
+                mito_props[mito_props["label"].isin(mito_in_nuc)]["area"].sum() * vx3
+            )
+
+            # Mito distribution: distance from nucleus surface within cell
+            nuc_binary = (seg_nuc == nuc_idx).astype(np.uint8)
+            cell_binary = (seg_mem_exp == cell_idx).astype(np.uint8)
+            dist_from_nuc = distance_transform_edt(1 - nuc_binary) * cell_binary * (px ** 2)
+            mito_in_cell = cell_binary * (mito_labelled > 0)
+
+            # Bin mito pixel counts by distance
+            flat_dist = np.ravel(dist_from_nuc)
+            flat_mito = np.ravel(mito_in_cell)
+            mask_nonzero = flat_dist > 0
+            if mask_nonzero.any():
+                binned_dist = np.round(flat_dist[mask_nonzero], 2)
+                binned_mito = flat_mito[mask_nonzero]
+                dist_df = pd.DataFrame({"distance": binned_dist, "mito_pixels": binned_mito})
+                agg = dist_df.groupby("distance")["mito_pixels"].agg(["sum", "count"]).reset_index()
+                max_d = agg["distance"].max()
+                if max_d > 0:
+                    agg["normalised_distance"] = agg["distance"] / max_d
+                else:
+                    agg["normalised_distance"] = 0.0
+                agg["mito_ratio"] = agg["sum"] / agg["count"]
+                mean_mito_ratio = float(agg["mito_ratio"].mean())
+            else:
+                mean_mito_ratio = np.nan
+
+            mito_rows.append({
+                "cell_label": cell_idx,
+                "number_of_mito": n_mito,
+                "mito_volume_um3": total_mito_vol,
+                "mito_cell_vol_ratio": (
+                    total_mito_vol / row["cell_volume_um"]
+                    if row["cell_volume_um"] > 0 else np.nan
+                ),
+                "mean_mito_distance_ratio": mean_mito_ratio,
+            })
+
+        mito_df = pd.DataFrame(mito_rows)
+        result = matching.merge(mito_df, on="cell_label", how="left")
+
+        # Acinus-level stats
+        acinus_regions = regionprops(acinus_mask)
+        if acinus_regions:
+            result["acinus_volume_um3"] = acinus_regions[0].area * vx3
+            result["total_mito_volume_um3"] = mito_df["mito_volume_um3"].sum()
+            result["number_of_cells"] = len(matching)
+        else:
+            result["acinus_volume_um3"] = np.nan
+            result["total_mito_volume_um3"] = np.nan
+            result["number_of_cells"] = 0
+
+        # Filter out biologically implausible cells
+        result = result[
+            (result["mito_cell_vol_ratio"] < 0.5)
+            & (result["nucleus_cell_volume_ratio"] < 0.9)
+            & (result["mito_volume_um3"] > 0)
+        ]
+
+        result["flag"] = flag
+        return result
+
+    # =====================================================================
+    #  Run multiple analyses at once
+    # =====================================================================
+
+    def run(self, analyses, **kwargs):
+        """
+        Run one or more analyses and return a dict of DataFrames.
+
+        Parameters
+        ----------
+        analyses : list of str
+            Choose from: ``"acinus_shape"``, ``"cell_nuclear_shape"``,
+            ``"protein_polarisation"``, ``"apoptosis"``, ``"protein_proximity"``.
+        **kwargs
+            Analysis-specific overrides (e.g. ``smoothing_sigma``,
+            ``search_radius_um``).  Only kwargs matching each method's
+            signature are forwarded.
+        """
+        unknown = set(analyses) - VALID_ANALYSES
+        if unknown:
+            raise ValueError(f"Unknown analyses: {unknown}. Choose from {VALID_ANALYSES}")
+
+        results: Dict[str, pd.DataFrame] = {}
+        for name in analyses:
+            try:
+                method = getattr(self, name)
+                sig = inspect.signature(method)
+                filtered = {k: v for k, v in kwargs.items()
+                            if k in sig.parameters and v is not None}
+                df = method(**filtered)
+                df["filename"] = self.filename
+                results[name] = df
+            except Exception as e:
+                results[name] = pd.DataFrame(
+                    {"filename": [self.filename], "flag": [f"FAILED: {e}"]}
                 )
 
-            elif name == "cell_nuclear_shape":
-                sigma = smoothing_sigma if smoothing_sigma is not None else 4.0
-                df = analyse_cell_nuclear_shape(
-                    image_path, nuclear_mask_path, membrane_mask_path,
-                    dapi_channel, membrane_channel,
-                    smoothing_sigma=sigma,
-                )
-
-            elif name == "protein_polarisation":
-                sigma = smoothing_sigma if smoothing_sigma is not None else 11.0
-                df = analyse_protein_polarisation(
-                    image_path, dapi_channel, membrane_channel,
-                    protein_channel, extra_acinus_channels, sigma,
-                )
-
-            elif name == "apoptosis":
-                df = analyse_apoptosis(
-                    image_path, c3_mask_path, dapi_mask_path,
-                    dapi_channel, c3_channel or 3, membrane_channel,
-                    c3_separation_um, c3_min_radius_um,
-                    dapi_separation_um, dapi_min_radius_um,
-                )
-
-            elif name == "protein_proximity":
-                df = analyse_protein_proximity(
-                    image_path, c3_mask_path, dapi_mask_path,
-                    dapi_channel, c3_channel or 3, membrane_channel,
-                    proximity_protein_channel,
-                    search_radius_um, c3_separation_um, c3_min_radius_um,
-                    dapi_separation_um, dapi_min_radius_um,
-                )
-
-            df["filename"] = filename
-            results[name] = df
-
-        except Exception as e:
-            results[name] = pd.DataFrame({"filename": [filename], "flag": [f"FAILED: {e}"]})
-
-    return results
+        return results
 
 
 # ---------------------------------------------------------------------------
 #  Batch processing
 # ---------------------------------------------------------------------------
+
+_CONSTRUCTOR_KEYS = frozenset({
+    "dapi_channel", "membrane_channel", "protein_channel",
+    "c3_channel", "edu_channel", "mito_channel",
+    "proximity_protein_channel", "extra_acinus_channels",
+})
+
 
 def batch_analyse(
     image_dir: str,
@@ -904,11 +1105,12 @@ def batch_analyse(
     file_extension: str = "tif",
     n_jobs: int = 3,
     output_csv: Optional[str] = None,
-    # Segmentation mask directories (optional)
     nuclear_mask_dir: Optional[str] = None,
     membrane_mask_dir: Optional[str] = None,
     c3_mask_dir: Optional[str] = None,
     dapi_mask_dir: Optional[str] = None,
+    edu_mask_dir: Optional[str] = None,
+    mito_mask_dir: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, pd.DataFrame]:
     """
@@ -937,17 +1139,27 @@ def batch_analyse(
     mem_masks = _sorted_masks(membrane_mask_dir)
     c3_masks = _sorted_masks(c3_mask_dir)
     dapi_masks = _sorted_masks(dapi_mask_dir)
+    edu_masks = _sorted_masks(edu_mask_dir)
+    mito_masks = _sorted_masks(mito_mask_dir)
+
+    # Split kwargs into constructor args vs analysis args
+    ctor_kwargs = {k: v for k, v in kwargs.items()
+                   if k in _CONSTRUCTOR_KEYS and v is not None}
+    analysis_kwargs = {k: v for k, v in kwargs.items()
+                       if k not in _CONSTRUCTOR_KEYS}
 
     def _process(i):
-        return analyse_image(
-            str(image_paths[i]),
-            analyses,
+        img = AcinarImage(
+            image_paths[i],
             nuclear_mask_path=nuc_masks[i],
             membrane_mask_path=mem_masks[i],
             c3_mask_path=c3_masks[i],
             dapi_mask_path=dapi_masks[i],
-            **kwargs,
+            edu_mask_path=edu_masks[i],
+            mito_mask_path=mito_masks[i],
+            **ctor_kwargs,
         )
+        return img.run(analyses, **analysis_kwargs)
 
     print(f"Found {len(image_paths)} images. Running analyses: {analyses}")
     with _tqdm_joblib(tqdm(desc="Acinar Analysis", total=len(image_paths))):
@@ -959,10 +1171,7 @@ def batch_analyse(
     merged: Dict[str, pd.DataFrame] = {}
     for name in analyses:
         frames = [r[name] for r in all_results if name in r]
-        if frames:
-            merged[name] = pd.concat(frames, ignore_index=True)
-        else:
-            merged[name] = pd.DataFrame()
+        merged[name] = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     if output_csv:
         for name, df in merged.items():
@@ -993,6 +1202,14 @@ Examples:
   python acinar_analysis.py --image-dir ./images --analyses apoptosis \\
       --c3-mask-dir ./c3_masks --dapi-mask-dir ./dapi_masks --c3-channel 3
 
+  # Proliferation (EdU, needs masks)
+  python acinar_analysis.py --image-dir ./images --analyses proliferation \\
+      --edu-mask-dir ./edu_masks --dapi-mask-dir ./dapi_masks --edu-channel 1
+
+  # Mitochondria analysis (needs nuclear, membrane, and mito masks)
+  python acinar_analysis.py --image-dir ./images --analyses mitochondria \\
+      --nuclear-mask-dir ./nuc_masks --membrane-mask-dir ./mem_masks --mito-mask-dir ./mito_masks
+
   # Multiple analyses at once
   python acinar_analysis.py --image-dir ./images --analyses acinus_shape protein_polarisation \\
       --protein-channel 1 --output results.csv
@@ -1009,11 +1226,15 @@ Examples:
     parser.add_argument("--membrane-channel", type=int, default=None)
     parser.add_argument("--protein-channel", type=int, default=None)
     parser.add_argument("--c3-channel", type=int, default=None)
+    parser.add_argument("--edu-channel", type=int, default=None)
+    parser.add_argument("--mito-channel", type=int, default=None)
     parser.add_argument("--proximity-protein-channel", type=int, default=None)
     parser.add_argument("--nuclear-mask-dir", default=None)
     parser.add_argument("--membrane-mask-dir", default=None)
     parser.add_argument("--c3-mask-dir", default=None)
     parser.add_argument("--dapi-mask-dir", default=None)
+    parser.add_argument("--edu-mask-dir", default=None)
+    parser.add_argument("--mito-mask-dir", default=None)
     parser.add_argument("--search-radius-um", type=float, default=5.0)
     parser.add_argument("--n-jobs", type=int, default=3)
     parser.add_argument("--output", default="acinar_results.csv", help="Output CSV path")
@@ -1030,10 +1251,14 @@ Examples:
         membrane_mask_dir=args.membrane_mask_dir,
         c3_mask_dir=args.c3_mask_dir,
         dapi_mask_dir=args.dapi_mask_dir,
+        edu_mask_dir=args.edu_mask_dir,
+        mito_mask_dir=args.mito_mask_dir,
         dapi_channel=args.dapi_channel,
         membrane_channel=args.membrane_channel,
         protein_channel=args.protein_channel,
         c3_channel=args.c3_channel,
+        edu_channel=args.edu_channel,
+        mito_channel=args.mito_channel,
         proximity_protein_channel=args.proximity_protein_channel,
         search_radius_um=args.search_radius_um,
     )
