@@ -118,7 +118,6 @@ def cellpose_live_segmentation(
         m0, _, _ = model.eval(
             stack[0],
             diameter=None,
-            channels=[0, 0],
             flow_threshold=flow_threshold,
             cellprob_threshold=cellprob_threshold,
         )
@@ -137,7 +136,6 @@ def cellpose_live_segmentation(
         m, _, _ = model.eval(
             stack[i],
             diameter=diameter,
-            channels=[0, 0],
             flow_threshold=flow_threshold,
             cellprob_threshold=cellprob_threshold,
             min_size=min_size,
