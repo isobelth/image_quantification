@@ -20,7 +20,7 @@ Single image::
 
     img = AcinarImage(
         "path/to/image.tif",
-        dapi_channel=0,
+        nuclear_channel=0,
         membrane_channel=2,
         protein_channel=1,
     )
@@ -38,14 +38,14 @@ Batch::
     df = batch_analyse(
         image_dir="path/to/images",
         analyses=["acinus_shape"],
-        dapi_channel=0,
+        nuclear_channel=0,
         membrane_channel=2,
         output_csv="results.csv",
     )
 
 CLI::
 
-    python acinar_analysis.py --image-dir path/to/images --analyses acinus_shape --dapi-channel 0 --membrane-channel 2
+    python acinar_analysis.py --image-dir path/to/images --analyses acinus_shape --nuclear-channel 0 --membrane-channel 2
 """
 from __future__ import annotations
 
@@ -105,12 +105,14 @@ _UNSET = object()  # sentinel for "use instance default"
 
 
 @contextlib.contextmanager
-def _tqdm_joblib(tqdm_object):
+def _tqdm_joblib(tqdm_object, progress_callback=None):
     """Context manager so joblib Parallel updates a tqdm bar."""
 
     class _Callback(joblib.parallel.BatchCompletionCallBack):
         def __call__(self, *args, **kwargs):
             tqdm_object.update(n=self.batch_size)
+            if progress_callback is not None:
+                progress_callback(tqdm_object.n, tqdm_object.total)
             return super().__call__(*args, **kwargs)
 
     old = joblib.parallel.BatchCompletionCallBack
@@ -387,8 +389,8 @@ class AcinarImage:
     ----------
     image_path : str or Path
         Path to the multi-channel TIFF stack.
-    dapi_channel : int
-        DAPI channel index.
+    nuclear_channel : int
+        Nuclear channel index.
     membrane_channel : int or None
         Membrane channel index (None = no membrane channel).
     protein_channel : int or None
@@ -401,8 +403,8 @@ class AcinarImage:
         Channel for the proximity-protein analysis.
     nuclear_mask_path, membrane_mask_path : str or None
         Paths to binary segmentation masks (for cell_nuclear_shape).
-    c3_mask_path, dapi_mask_path : str or None
-        Paths to binary segmentation masks (for apoptosis / protein_proximity).
+    c3_mask_path : str or None
+        Path to binary C3 segmentation mask (for apoptosis / protein_proximity).
     edu_mask_path : str or None
         Path to binary EdU segmentation mask (for proliferation).
     mito_channel : int or None
@@ -417,7 +419,7 @@ class AcinarImage:
         self,
         image_path,
         *,
-        dapi_channel=0,
+        nuclear_channel=0,
         membrane_channel=2,
         protein_channel=None,
         c3_channel=3,
@@ -427,7 +429,6 @@ class AcinarImage:
         nuclear_mask_path=None,
         membrane_mask_path=None,
         c3_mask_path=None,
-        dapi_mask_path=None,
         edu_mask_path=None,
         mito_mask_path=None,
         extra_acinus_channels=None,
@@ -436,7 +437,7 @@ class AcinarImage:
         self.filename = os.path.basename(self.image_path).lower()
 
         # Channel configuration
-        self.dapi_channel = dapi_channel
+        self.nuclear_channel = nuclear_channel
         self.membrane_channel = membrane_channel
         self.protein_channel = protein_channel
         self.c3_channel = c3_channel
@@ -444,18 +445,24 @@ class AcinarImage:
         self.mito_channel = mito_channel
         self.proximity_protein_channel = proximity_protein_channel
         self.extra_acinus_channels = extra_acinus_channels
+        self.qc_dir = None  # set externally or via batch_analyse
+        self.return_volumes = False  # when True, populate self.volumes
+        self.volumes: Dict[str, np.ndarray] = {}  # name -> 3D array
 
         # Mask paths
         self.nuclear_mask_path = nuclear_mask_path
         self.membrane_mask_path = membrane_mask_path
         self.c3_mask_path = c3_mask_path
-        self.dapi_mask_path = dapi_mask_path
         self.edu_mask_path = edu_mask_path
         self.mito_mask_path = mito_mask_path
 
         # Lazy-loaded shared state
         self._image = None
         self._spacing = None
+        self._segment_cache: Dict[tuple, tuple] = {}  # (extra_chs, sigma) -> (mask, px, flag)
+        self._mask_raw_cache: Dict[str, np.ndarray] = {}  # path -> raw array
+        self._mask_rescaled_cache: Dict[str, np.ndarray] = {}  # path -> rescaled array
+        self._acinus_approx_cache: Dict[tuple, np.ndarray] = {}  # extra_chs_key -> array
 
     # -- Lazy properties --------------------------------------------------
 
@@ -484,22 +491,86 @@ class AcinarImage:
         """Rescale a 3-D volume to isotropic voxels at *scale*."""
         return rescale(volume, (scale * self.scale_z, scale, scale), anti_aliasing=False)
 
-    def _build_acinus_approx(self, dapi_ch=_UNSET, membrane_ch=_UNSET,
+    # -- QC plotting -------------------------------------------------------
+
+    def _save_qc(self, analysis_name: str, raw_slice: np.ndarray,
+                 overlays: List[Tuple[np.ndarray, str]], title_extra: str = ""):
+        """Save a QC figure with raw image + label overlays at the mid-Z slice.
+
+        Parameters
+        ----------
+        analysis_name : str
+            Used in the output filename.
+        raw_slice : 2-D array
+            Grayscale background image (single Z-slice).
+        overlays : list of (2-D label/mask array, name)
+            Each overlay is drawn as a coloured contour / transparent layer.
+        title_extra : str
+            Extra text appended to the figure title.
+        """
+        if self.qc_dir is None:
+            return
+
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        qc_path = pathlib.Path(self.qc_dir)
+        qc_path.mkdir(parents=True, exist_ok=True)
+
+        n_panels = 1 + len(overlays)
+        fig = Figure(figsize=(5 * n_panels, 5))
+        FigureCanvasAgg(fig)
+        axes = fig.subplots(1, n_panels, squeeze=False)[0]
+
+        stem = pathlib.Path(self.image_path).stem
+
+        # Raw image panel
+        axes[0].imshow(raw_slice, cmap="gray")
+        axes[0].set_title("Raw")
+        axes[0].axis("off")
+
+        # Overlay panels
+        for ax, (overlay, name) in zip(axes[1:], overlays):
+            ax.imshow(raw_slice, cmap="gray")
+            if overlay.max() > 1:  # label image
+                masked = np.ma.masked_where(overlay == 0, overlay)
+                ax.imshow(masked, cmap="tab20", alpha=0.5, interpolation="nearest")
+            else:  # binary mask
+                ax.contour(overlay, levels=[0.5], colors="cyan", linewidths=0.8)
+            ax.set_title(name)
+            ax.axis("off")
+
+        fig.suptitle(f"{stem} \u2014 {analysis_name} {title_extra}", fontsize=10)
+        fig.tight_layout()
+        out = qc_path / f"{stem}_{analysis_name}_qc.png"
+        fig.savefig(str(out), dpi=150, bbox_inches="tight")
+
+    def _mid_z(self, vol: np.ndarray) -> np.ndarray:
+        """Return the middle Z-slice of a 3-D volume."""
+        return vol[vol.shape[0] // 2]
+
+    def _build_acinus_approx(self, nuclear_ch=_UNSET, membrane_ch=_UNSET,
                              extra_channels=_UNSET):
-        """Sum selected channels to approximate acinus extent."""
-        if dapi_ch is _UNSET:
-            dapi_ch = self.dapi_channel
+        """Sum selected channels to approximate acinus extent (cached)."""
+        if nuclear_ch is _UNSET:
+            nuclear_ch = self.nuclear_channel
         if membrane_ch is _UNSET:
             membrane_ch = self.membrane_channel
         if extra_channels is _UNSET:
             extra_channels = self.extra_acinus_channels
 
-        combined = rescale_intensity(self.image[:, dapi_ch, :, :]).astype(np.float64)
+        key = (nuclear_ch, membrane_ch,
+               tuple(extra_channels) if extra_channels else ())
+        if key in self._acinus_approx_cache:
+            return self._acinus_approx_cache[key]
+
+        combined = rescale_intensity(self.image[:, nuclear_ch, :, :]).astype(np.float64)
         if membrane_ch is not None:
             combined += rescale_intensity(self.image[:, membrane_ch, :, :]).astype(np.float64)
         if extra_channels:
             for ch in extra_channels:
                 combined += rescale_intensity(self.image[:, ch, :, :]).astype(np.float64)
+        self._acinus_approx_cache[key] = combined
         return combined
 
     def _segment(self, acinus_approx, smoothing_sigma=4.0):
@@ -507,14 +578,39 @@ class AcinarImage:
         return segment_acinus(acinus_approx, self.spacing,
                               smoothing_sigma=smoothing_sigma)
 
+    def _get_acinus_mask(self, extra_channels=None, smoothing_sigma=4.0):
+        """Cached acinus segmentation keyed by (extra_channels, sigma)."""
+        key = (tuple(extra_channels) if extra_channels else (),
+               smoothing_sigma)
+        if key not in self._segment_cache:
+            approx = self._build_acinus_approx(
+                extra_channels=extra_channels if extra_channels else _UNSET)
+            self._segment_cache[key] = self._segment(approx, smoothing_sigma)
+        return self._segment_cache[key]
+
+    def _load_mask_raw(self, path):
+        """Load a mask image from disk, cached by path."""
+        path = str(path)
+        if path not in self._mask_raw_cache:
+            self._mask_raw_cache[path] = imread(path)
+        return self._mask_raw_cache[path]
+
+    def _load_mask_rescaled(self, path):
+        """Load and rescale a mask image, cached by path."""
+        path = str(path)
+        if path not in self._mask_rescaled_cache:
+            raw = self._load_mask_raw(path)
+            self._mask_rescaled_cache[path] = self._rescale_volume(raw)
+        return self._mask_rescaled_cache[path]
+
     # =====================================================================
     #  Analysis methods
     # =====================================================================
 
     def acinus_shape(self, smoothing_sigma=4.0):
         """Calculate acinus volume (µm³) and roundness."""
-        acinus_approx = self._build_acinus_approx()
-        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+        acinus_mask, px, flag = self._get_acinus_mask(
+            smoothing_sigma=smoothing_sigma)
 
         regions = regionprops(acinus_mask)
         if not regions:
@@ -529,6 +625,16 @@ class AcinarImage:
         if len(hole_sizes) > 1 and flag == "None":
             flag = "hole"
 
+        # QC plot
+        acinus_approx = self._build_acinus_approx()
+        raw_slice = self._mid_z(self._rescale_volume(acinus_approx))
+        self._save_qc("acinus_shape", raw_slice,
+                      [(self._mid_z(acinus_mask), "Acinus mask")],
+                      title_extra=f"vol={vol:.0f} µm³, round={roundness:.2f}")
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+
         return pd.DataFrame({"vol_um": [vol], "roundness": [roundness], "flag": [flag]})
 
     def cell_nuclear_shape(self, smoothing_sigma=4.0):
@@ -542,13 +648,11 @@ class AcinarImage:
                 "'membrane_mask_path'. Set them on the AcinarImage instance."
             )
 
-        acinus_approx = self._build_acinus_approx()
-        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+        acinus_mask, px, flag = self._get_acinus_mask(
+            smoothing_sigma=smoothing_sigma)
 
-        nuclear_mask = imread(str(self.nuclear_mask_path))
-        membrane_mask = imread(str(self.membrane_mask_path))
-        rescaled_nuc = self._rescale_volume(nuclear_mask)
-        rescaled_mem = self._rescale_volume(membrane_mask)
+        rescaled_nuc = self._load_mask_rescaled(self.nuclear_mask_path)
+        rescaled_mem = self._load_mask_rescaled(self.membrane_mask_path)
 
         # Restrict to acinus
         rescaled_nuc = rescaled_nuc * acinus_mask
@@ -589,6 +693,18 @@ class AcinarImage:
         if self.spacing == [1, 1, 1]:
             matching["flag"] = "wrong_metadata"
 
+        # QC plot
+        raw_slice = self._mid_z(rescaled_nuc)
+        self._save_qc("cell_nuclear_shape", raw_slice, [
+            (self._mid_z(seg_nuc), "Nuclei labels"),
+            (self._mid_z(seg_mem_exp), "Cell labels"),
+        ])
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["nuclei_labels"] = seg_nuc
+            self.volumes["cell_labels"] = seg_mem_exp
+
         return matching
 
     def protein_polarisation(self, smoothing_sigma=11.0):
@@ -604,8 +720,8 @@ class AcinarImage:
         extra = [self.protein_channel]
         if self.extra_acinus_channels:
             extra.extend(self.extra_acinus_channels)
-        acinus_approx = self._build_acinus_approx(extra_channels=extra)
-        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+        acinus_mask, px, flag = self._get_acinus_mask(
+            extra_channels=extra, smoothing_sigma=smoothing_sigma)
 
         protein_rescaled = self._rescale_volume(
             self.image[:, self.protein_channel, :, :]
@@ -627,30 +743,41 @@ class AcinarImage:
         df["rounded_distance"] = df["distance_over_radius"].round(2)
         df = df.groupby("rounded_distance", as_index=False)["protein_intensity"].mean()
         df["flag"] = flag
+
+        # QC plot
+        raw_slice = self._mid_z(protein_rescaled)
+        self._save_qc("protein_polarisation", raw_slice, [
+            (self._mid_z(acinus_mask), "Acinus mask"),
+        ])
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["protein"] = protein_rescaled
+
         return df
 
     def apoptosis(self, c3_separation_um=7.0, c3_min_radius_um=1.3,
-                  dapi_separation_um=6.0, dapi_min_radius_um=2.0):
+                  nuclear_separation_um=6.0, nuclear_min_radius_um=2.0):
         """Count C3-positive (apoptotic) cells and total nuclei per acinus.
 
-        Requires ``c3_mask_path`` and ``dapi_mask_path`` to be set.
+        Requires ``c3_mask_path`` and ``nuclear_mask_path`` to be set.
         """
-        if self.c3_mask_path is None or self.dapi_mask_path is None:
+        if self.c3_mask_path is None or self.nuclear_mask_path is None:
             raise ValueError(
-                "apoptosis requires both 'c3_mask_path' and 'dapi_mask_path'."
+                "apoptosis requires both 'c3_mask_path' and 'nuclear_mask_path'."
             )
 
         extra = [self.c3_channel]
-        acinus_approx = self._build_acinus_approx(extra_channels=extra)
-        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma=12.0)
+        acinus_mask, px, flag = self._get_acinus_mask(
+            extra_channels=extra, smoothing_sigma=12.0)
 
-        c3_mask = self._rescale_volume(imread(str(self.c3_mask_path)))
-        dapi_mask = self._rescale_volume(imread(str(self.dapi_mask_path)))
+        c3_mask = self._load_mask_rescaled(self.c3_mask_path)
+        nuclear_mask = self._load_mask_rescaled(self.nuclear_mask_path)
 
         c3_labels = watershed_segment(c3_mask, acinus_mask, px,
                                       c3_separation_um, c3_min_radius_um)
-        dapi_labels = watershed_segment(dapi_mask, acinus_mask, px,
-                                        dapi_separation_um, dapi_min_radius_um)
+        nuclear_labels = watershed_segment(nuclear_mask, acinus_mask, px,
+                                        nuclear_separation_um, nuclear_min_radius_um)
 
         # Distance map (normalised 0-1)
         dist = distance_transform_edt(acinus_mask > 0) * px
@@ -689,22 +816,37 @@ class AcinarImage:
         c3_props["acinus_volume_um"] = acinus_vol
         c3_props["acinus_roundness"] = acinus_round
         c3_props["number_of_nuclei"] = pd.DataFrame(
-            regionprops_table(dapi_labels, properties=("label",))
+            regionprops_table(nuclear_labels, properties=("label",))
         ).shape[0]
         c3_props["flag"] = flag
+
+        # QC plot
+        raw_slice = self._mid_z(self._rescale_volume(
+            self.image[:, self.c3_channel, :, :]))
+        self._save_qc("apoptosis", raw_slice, [
+            (self._mid_z(acinus_mask), "Acinus mask"),
+            (self._mid_z(c3_labels), "C3 labels"),
+            (self._mid_z(nuclear_labels), "Nuclear labels"),
+        ])
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["c3_labels"] = c3_labels
+            self.volumes["nuclear_labels"] = nuclear_labels
+
         return c3_props
 
     def protein_proximity(self, search_radius_um=5.0,
                           c3_separation_um=7.0, c3_min_radius_um=3.0,
-                          dapi_separation_um=6.0, dapi_min_radius_um=3.0):
+                          nuclear_separation_um=6.0, nuclear_min_radius_um=3.0):
         """Compare protein intensity near dying vs non-dying cells.
 
-        Requires ``c3_mask_path``, ``dapi_mask_path``, and
+        Requires ``c3_mask_path``, ``nuclear_mask_path``, and
         ``proximity_protein_channel`` to be set.
         """
-        if self.c3_mask_path is None or self.dapi_mask_path is None:
+        if self.c3_mask_path is None or self.nuclear_mask_path is None:
             raise ValueError(
-                "protein_proximity requires both 'c3_mask_path' and 'dapi_mask_path'."
+                "protein_proximity requires both 'c3_mask_path' and 'nuclear_mask_path'."
             )
         if self.proximity_protein_channel is None:
             raise ValueError(
@@ -712,20 +854,20 @@ class AcinarImage:
             )
 
         extra = [self.c3_channel]
-        acinus_approx = self._build_acinus_approx(extra_channels=extra)
-        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma=12.0)
+        acinus_mask, px, flag = self._get_acinus_mask(
+            extra_channels=extra, smoothing_sigma=12.0)
 
-        c3_raw = imread(str(self.c3_mask_path))
-        dapi_raw = imread(str(self.dapi_mask_path))
-        c3_mask = self._rescale_volume(c3_raw)
-        # Live cells = DAPI minus dilated C3
-        live_cells = self._rescale_volume(dapi_raw - dilation(c3_raw, ball(2)))
+        c3_raw = self._load_mask_raw(self.c3_mask_path)
+        nuclear_raw = self._load_mask_raw(self.nuclear_mask_path)
+        c3_mask = self._load_mask_rescaled(self.c3_mask_path)
+        # Live cells = nuclear mask minus dilated C3
+        live_cells = self._rescale_volume(nuclear_raw - dilation(c3_raw, ball(2)))
         live_cells = np.where(live_cells > 1, 0, live_cells)
 
         c3_labels = watershed_segment(c3_mask, acinus_mask, px,
                                       c3_separation_um, c3_min_radius_um)
         live_labels = watershed_segment(live_cells, acinus_mask, px,
-                                        dapi_separation_um, dapi_min_radius_um)
+                                        nuclear_separation_um, nuclear_min_radius_um)
 
         # Distance map (normalised 0-1)
         dist = distance_transform_edt(acinus_mask > 0)
@@ -809,22 +951,37 @@ class AcinarImage:
             all_cells = all_cells.merge(pd.DataFrame(prox_rows), on="label", how="left")
 
         all_cells["flag"] = flag
+
+        # QC plot
+        raw_slice = self._mid_z(self._rescale_volume(
+            self.image[:, self.proximity_protein_channel, :, :]))
+        self._save_qc("protein_proximity", raw_slice, [
+            (self._mid_z(acinus_mask), "Acinus mask"),
+            (self._mid_z(c3_labels), "Dying (C3)"),
+            (self._mid_z(live_labels), "Non-dying"),
+        ])
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["c3_labels"] = c3_labels
+            self.volumes["live_labels"] = live_labels
+
         return all_cells
 
     def proliferation(self, edu_separation_um=4.0, edu_min_radius_um=2.0,
-                      dapi_separation_um=4.0, dapi_min_radius_um=2.0):
+                      nuclear_separation_um=4.0, nuclear_min_radius_um=2.0):
         """Count EdU-positive (dividing) vs non-dividing cells per acinus.
 
         Dividing cells are identified from the EdU mask.  Non-dividing cells
-        are DAPI-positive but EdU-negative (DAPI mask minus dilated EdU mask).
+        are nuclear-positive but EdU-negative (nuclear mask minus dilated EdU mask).
 
-        Requires ``edu_mask_path`` and ``dapi_mask_path`` to be set.
-        The ``edu_channel`` is used (along with DAPI) to build the acinus
+        Requires ``edu_mask_path`` and ``nuclear_mask_path`` to be set.
+        The ``edu_channel`` is used (along with nuclear channel) to build the acinus
         approximation.
         """
-        if self.edu_mask_path is None or self.dapi_mask_path is None:
+        if self.edu_mask_path is None or self.nuclear_mask_path is None:
             raise ValueError(
-                "proliferation requires both 'edu_mask_path' and 'dapi_mask_path'."
+                "proliferation requires both 'edu_mask_path' and 'nuclear_mask_path'."
             )
         if self.edu_channel is None:
             raise ValueError(
@@ -832,15 +989,16 @@ class AcinarImage:
             )
 
         extra = [self.edu_channel]
-        acinus_approx = self._build_acinus_approx(extra_channels=extra)
-        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma=6.0)
+        acinus_mask, px, flag = self._get_acinus_mask(
+            extra_channels=extra, smoothing_sigma=6.0)
 
-        edu_mask = self._rescale_volume(imread(str(self.edu_mask_path)))
-        dapi_mask = self._rescale_volume(imread(str(self.dapi_mask_path)))
+        edu_mask = self._load_mask_rescaled(self.edu_mask_path)
+        nuclear_raw = self._load_mask_raw(self.nuclear_mask_path)
+        edu_raw = self._load_mask_raw(self.edu_mask_path)
 
-        # Non-dividing = DAPI minus dilated EdU
+        # Non-dividing = nuclear mask minus dilated EdU
         non_dividing_mask = self._rescale_volume(
-            imread(str(self.dapi_mask_path)) - dilation(imread(str(self.edu_mask_path)), ball(2))
+            nuclear_raw - dilation(edu_raw, ball(2))
         )
         non_dividing_mask = np.where(non_dividing_mask > 1, 0, non_dividing_mask)
 
@@ -848,7 +1006,7 @@ class AcinarImage:
             edu_mask, acinus_mask, px, edu_separation_um, edu_min_radius_um
         )
         non_dividing_labels = watershed_segment(
-            non_dividing_mask, acinus_mask, px, dapi_separation_um, dapi_min_radius_um
+            non_dividing_mask, acinus_mask, px, nuclear_separation_um, nuclear_min_radius_um
         )
 
         # Distance map (normalised 0-1)
@@ -904,6 +1062,21 @@ class AcinarImage:
             )
 
         all_cells["flag"] = flag
+
+        # QC plot
+        raw_slice = self._mid_z(self._rescale_volume(
+            self.image[:, self.edu_channel, :, :]))
+        self._save_qc("proliferation", raw_slice, [
+            (self._mid_z(acinus_mask), "Acinus mask"),
+            (self._mid_z(dividing_labels), "Dividing (EdU+)"),
+            (self._mid_z(non_dividing_labels), "Non-dividing"),
+        ])
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["dividing_labels"] = dividing_labels
+            self.volumes["non_dividing_labels"] = non_dividing_labels
+
         return all_cells
 
     def mitochondria(self, smoothing_sigma=4.0,
@@ -922,17 +1095,17 @@ class AcinarImage:
                 "mitochondria requires 'mito_mask_path' to be set."
             )
 
-        acinus_approx = self._build_acinus_approx()
-        acinus_mask, px, flag = self._segment(acinus_approx, smoothing_sigma)
+        acinus_mask, px, flag = self._get_acinus_mask(
+            smoothing_sigma=smoothing_sigma)
 
         # Rescale masks
-        rescaled_nuc = self._rescale_volume(imread(str(self.nuclear_mask_path)))
-        rescaled_mem = self._rescale_volume(imread(str(self.membrane_mask_path)))
+        rescaled_nuc = self._load_mask_rescaled(self.nuclear_mask_path)
+        rescaled_mem = self._load_mask_rescaled(self.membrane_mask_path)
         rescaled_nuc = rescaled_nuc * acinus_mask
         rescaled_mem = rescaled_mem * acinus_mask
 
         # Rescale and label the mito mask
-        mito_raw = imread(str(self.mito_mask_path))
+        mito_raw = self._load_mask_raw(self.mito_mask_path)
         mito_labelled = label(mito_raw)
         mito_labelled = remove_small_objects(mito_labelled, min_size=mito_min_object_size)
         mito_labelled = self._rescale_volume(
@@ -1045,6 +1218,22 @@ class AcinarImage:
         ]
 
         result["flag"] = flag
+
+        # QC plot
+        raw_slice = self._mid_z(rescaled_nuc)
+        mito_slice = self._mid_z(mito_labelled)
+        self._save_qc("mitochondria", raw_slice, [
+            (self._mid_z(acinus_mask), "Acinus mask"),
+            (self._mid_z(seg_mem_exp), "Cell labels"),
+            (mito_slice, "Mito labels"),
+        ])
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["nuclei_labels"] = seg_nuc
+            self.volumes["cell_labels"] = seg_mem_exp
+            self.volumes["mito_labels"] = mito_labelled
+
         return result
 
     # =====================================================================
@@ -1092,7 +1281,7 @@ class AcinarImage:
 # ---------------------------------------------------------------------------
 
 _CONSTRUCTOR_KEYS = frozenset({
-    "dapi_channel", "membrane_channel", "protein_channel",
+    "nuclear_channel", "membrane_channel", "protein_channel",
     "c3_channel", "edu_channel", "mito_channel",
     "proximity_protein_channel", "extra_acinus_channels",
 })
@@ -1108,9 +1297,10 @@ def batch_analyse(
     nuclear_mask_dir: Optional[str] = None,
     membrane_mask_dir: Optional[str] = None,
     c3_mask_dir: Optional[str] = None,
-    dapi_mask_dir: Optional[str] = None,
     edu_mask_dir: Optional[str] = None,
     mito_mask_dir: Optional[str] = None,
+    qc_dir: Optional[str] = None,
+    progress_callback=None,
     **kwargs,
 ) -> Dict[str, pd.DataFrame]:
     """
@@ -1138,7 +1328,6 @@ def batch_analyse(
     nuc_masks = _sorted_masks(nuclear_mask_dir)
     mem_masks = _sorted_masks(membrane_mask_dir)
     c3_masks = _sorted_masks(c3_mask_dir)
-    dapi_masks = _sorted_masks(dapi_mask_dir)
     edu_masks = _sorted_masks(edu_mask_dir)
     mito_masks = _sorted_masks(mito_mask_dir)
 
@@ -1148,22 +1337,29 @@ def batch_analyse(
     analysis_kwargs = {k: v for k, v in kwargs.items()
                        if k not in _CONSTRUCTOR_KEYS}
 
+
+    # Disable QC plots in parallel mode to avoid Qt/matplotlib threading errors
+    _save_qc = analysis_kwargs.get('save_qc_plots', True)
+    if n_jobs != 1 and _save_qc:
+        print("[WARN] Disabling QC plot saving in parallel mode (n_jobs > 1) to avoid Qt/matplotlib errors.")
+        analysis_kwargs['save_qc_plots'] = False
+
     def _process(i):
         img = AcinarImage(
             image_paths[i],
             nuclear_mask_path=nuc_masks[i],
             membrane_mask_path=mem_masks[i],
             c3_mask_path=c3_masks[i],
-            dapi_mask_path=dapi_masks[i],
             edu_mask_path=edu_masks[i],
             mito_mask_path=mito_masks[i],
             **ctor_kwargs,
         )
+        img.qc_dir = qc_dir
         return img.run(analyses, **analysis_kwargs)
 
     print(f"Found {len(image_paths)} images. Running analyses: {analyses}")
-    with _tqdm_joblib(tqdm(desc="Acinar Analysis", total=len(image_paths))):
-        all_results = Parallel(n_jobs=n_jobs)(
+    with _tqdm_joblib(tqdm(desc="Acinar Analysis", total=len(image_paths)), progress_callback=progress_callback):
+        all_results = Parallel(n_jobs=n_jobs, backend="threading")(
             delayed(_process)(i) for i in range(len(image_paths))
         )
 
@@ -1200,11 +1396,11 @@ Examples:
 
   # Apoptosis counting (needs masks)
   python acinar_analysis.py --image-dir ./images --analyses apoptosis \\
-      --c3-mask-dir ./c3_masks --dapi-mask-dir ./dapi_masks --c3-channel 3
+      --c3-mask-dir ./c3_masks --nuclear-mask-dir ./nuclear_masks --c3-channel 3
 
   # Proliferation (EdU, needs masks)
   python acinar_analysis.py --image-dir ./images --analyses proliferation \\
-      --edu-mask-dir ./edu_masks --dapi-mask-dir ./dapi_masks --edu-channel 1
+      --edu-mask-dir ./edu_masks --nuclear-mask-dir ./nuclear_masks --edu-channel 1
 
   # Mitochondria analysis (needs nuclear, membrane, and mito masks)
   python acinar_analysis.py --image-dir ./images --analyses mitochondria \\
@@ -1222,7 +1418,7 @@ Examples:
         help="Which analyses to run",
     )
     parser.add_argument("--file-extension", default="tif")
-    parser.add_argument("--dapi-channel", type=int, default=0)
+    parser.add_argument("--nuclear-channel", type=int, default=0)
     parser.add_argument("--membrane-channel", type=int, default=None)
     parser.add_argument("--protein-channel", type=int, default=None)
     parser.add_argument("--c3-channel", type=int, default=None)
@@ -1232,7 +1428,6 @@ Examples:
     parser.add_argument("--nuclear-mask-dir", default=None)
     parser.add_argument("--membrane-mask-dir", default=None)
     parser.add_argument("--c3-mask-dir", default=None)
-    parser.add_argument("--dapi-mask-dir", default=None)
     parser.add_argument("--edu-mask-dir", default=None)
     parser.add_argument("--mito-mask-dir", default=None)
     parser.add_argument("--search-radius-um", type=float, default=5.0)
@@ -1250,10 +1445,9 @@ Examples:
         nuclear_mask_dir=args.nuclear_mask_dir,
         membrane_mask_dir=args.membrane_mask_dir,
         c3_mask_dir=args.c3_mask_dir,
-        dapi_mask_dir=args.dapi_mask_dir,
         edu_mask_dir=args.edu_mask_dir,
         mito_mask_dir=args.mito_mask_dir,
-        dapi_channel=args.dapi_channel,
+        nuclear_channel=args.nuclear_channel,
         membrane_channel=args.membrane_channel,
         protein_channel=args.protein_channel,
         c3_channel=args.c3_channel,
