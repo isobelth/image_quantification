@@ -65,7 +65,7 @@ from scipy import ndimage as ndi
 from scipy.ndimage import distance_transform_edt
 from skimage import util
 from skimage.feature import peak_local_max
-from skimage.filters import gaussian, threshold_otsu
+from skimage.filters import gaussian, threshold_otsu, threshold_triangle
 from skimage.measure import label, regionprops, regionprops_table
 from skimage.morphology import (
     ball,
@@ -243,10 +243,12 @@ def segment_acinus(
     acinus_image: np.ndarray,
     spacing: List[float],
     scale: float = 0.25,
-    smoothing_sigma: float = 4.0,
+    smoothing_sigma: float = 3.0,
     clip_low_quantile: float = 0.1,
     clip_high_quantile: float = 0.85,
     min_sphericity: float = 0.55,
+    qc_dir: Optional[str] = None,
+    filename: Optional[str] = None,
 ) -> Tuple[np.ndarray, float, str]:
     """
     Segment the primary acinus from a combined intensity image.
@@ -266,7 +268,24 @@ def segment_acinus(
         max=np.quantile(rescaled, clip_high_quantile),
     )
     smoothed = gaussian(clipped, sigma=smoothing_sigma)
-    thresh = threshold_otsu(smoothed)
+
+    # Save try_all_threshold QC image on mid-Z slice
+    if qc_dir is not None:
+        from skimage.filters import try_all_threshold
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        mid_z = smoothed[smoothed.shape[0] // 2]
+        fig, axes = try_all_threshold(mid_z, verbose=False)
+        FigureCanvasAgg(fig)
+        stem = pathlib.Path(filename).stem if filename else "unknown"
+        fig.suptitle(f"{stem} — threshold comparison (sigma={smoothing_sigma})", fontsize=10)
+        fig.tight_layout()
+        qc_path = pathlib.Path(qc_dir)
+        qc_path.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(qc_path / f"{stem}_try_all_threshold.png"),
+                    dpi=150, bbox_inches="tight")
+
+    thresh = threshold_triangle(smoothed)
     binary = smoothed > thresh
     binary = remove_small_holes(binary, area_threshold=100000)
     binary = remove_small_objects(binary, min_size=10000)
@@ -275,6 +294,24 @@ def segment_acinus(
     props = regionprops_table(labelled, properties=("label", "area"))
     keep = props["label"][np.argmax(props["area"])]
     acinus_mask = np.where(labelled == keep, 1, 0).astype(np.int32)
+
+    # If the acinus is hollow, fill the interior by drawing a sphere at
+    # the centre of mass.  Detect hollowness cheaply via binary_fill_holes
+    # (flood fill) instead of regionprops solidity (expensive convex hull).
+    mask_vol = int(acinus_mask.sum())
+    filled = ndi.binary_fill_holes(acinus_mask > 0)
+    filled_vol = int(filled.sum())
+    if mask_vol > 0 and (mask_vol / filled_vol) < 0.85:
+        com = ndi.center_of_mass(acinus_mask)
+        radius = 0.5 * (3 * mask_vol / (4 * np.pi)) ** (1 / 3)
+        zz, yy, xx = np.ogrid[:acinus_mask.shape[0],
+                               :acinus_mask.shape[1],
+                               :acinus_mask.shape[2]]
+        dist_sq = ((zz - com[0]) ** 2 +
+                   (yy - com[1]) ** 2 +
+                   (xx - com[2]) ** 2)
+        acinus_mask = np.where(dist_sq <= radius ** 2, 1,
+                               acinus_mask).astype(np.int32)
 
     # Test sphericity
     flag = "None"
@@ -285,8 +322,8 @@ def segment_acinus(
         sphericity = eigvals["inertia_tensor_eigvals-2"][0] / eigvals["inertia_tensor_eigvals-0"][0]
         if sphericity < min_sphericity:
             flag = "multiple_acini_split"
-            smoothed2 = gaussian(clipped, sigma=1)
-            thresh2 = threshold_otsu(smoothed2)
+            smoothed2 = gaussian(clipped, sigma=7)
+            thresh2 = threshold_triangle(smoothed2)
             binary2 = smoothed2 > thresh2
             binary2 = remove_small_holes(binary2, area_threshold=100000)
             binary2 = remove_small_objects(binary2, min_size=10000)
@@ -297,6 +334,12 @@ def segment_acinus(
                 keep2 = props2["label"][np.argmax(props2["area"])]
                 acinus_mask = np.where(labelled2 == keep2, 1, 0).astype(np.int32)
                 acinus_mask = expand_labels(acinus_mask, distance=8)
+
+    # Final erosion to tighten the acinus boundary
+    acinus_mask = erosion(acinus_mask > 0, ball(3)).astype(np.int32)
+
+    # Fill any remaining internal holes to ensure a fully solid mask
+    acinus_mask = remove_small_holes(acinus_mask.astype(bool), area_threshold=1000000).astype(np.int32)
 
     return acinus_mask, new_pixel_size, flag
 
@@ -570,8 +613,46 @@ class AcinarImage:
 
     # -- QC plotting -------------------------------------------------------
 
+    def _rgb_mid_z(self, red_channel: Optional[int] = None) -> np.ndarray:
+        """Build an RGB composite of the mid-Z slice at rescaled resolution.
+
+        B = nuclear channel, G = membrane channel,
+        R = *red_channel* (a single analysis-specific channel).
+
+        The image is rescaled to the same 0.25-scale isotropic resolution
+        used by the acinus mask so that overlays align correctly.
+        """
+        nuc_ch = self.nuclear_channel
+        mem_ch = self.membrane_channel
+
+        def _rescale_ch(ch_idx):
+            return self._rescale_volume(self.image[:, ch_idx, :, :])
+
+        def _norm(arr):
+            mn, mx = float(arr.min()), float(arr.max())
+            if mx == mn:
+                return np.zeros_like(arr, dtype=np.float64)
+            return (arr.astype(np.float64) - mn) / (mx - mn)
+
+        nuc_vol = _rescale_ch(nuc_ch)
+        mid = nuc_vol.shape[0] // 2
+
+        blue = _norm(nuc_vol[mid])
+        if mem_ch is not None:
+            green = _norm(_rescale_ch(mem_ch)[mid])
+        else:
+            green = np.zeros_like(blue)
+
+        if red_channel is not None:
+            red = _norm(_rescale_ch(red_channel)[mid])
+        else:
+            red = np.zeros_like(blue)
+
+        return np.stack([red, green, blue], axis=-1).clip(0, 1)
+
     def _save_qc(self, analysis_name: str, raw_slice: np.ndarray,
-                 overlays: List[Tuple[np.ndarray, str]], title_extra: str = ""):
+                 overlays: List[Tuple[np.ndarray, str]], title_extra: str = "",
+                 red_channel: Optional[int] = None):
         """Save a QC figure with raw image + label overlays at the mid-Z slice.
 
         Parameters
@@ -584,6 +665,8 @@ class AcinarImage:
             Each overlay is drawn as a coloured contour / transparent layer.
         title_extra : str
             Extra text appended to the figure title.
+        red_channel : int or None
+            Channel index for the red layer of the RGB background.
         """
         if self.qc_dir is None:
             return
@@ -601,15 +684,21 @@ class AcinarImage:
 
         stem = pathlib.Path(self.image_path).stem
 
+        # Use RGB composite if available, otherwise fall back to grayscale
+        rgb = self._rgb_mid_z(red_channel=red_channel)
+
         # Raw image panel
-        axes[0].imshow(raw_slice, cmap="gray")
-        axes[0].set_title("Raw")
+        axes[0].imshow(rgb)
+        r_label = f"ch{red_channel}" if red_channel is not None else "--"
+        axes[0].set_title(f"Raw (R={r_label}, G=mem, B=nuc)")
         axes[0].axis("off")
 
         # Overlay panels
-        for ax, (overlay, name) in zip(axes[1:], overlays):
-            ax.imshow(raw_slice, cmap="gray")
-            if overlay.max() > 1:  # label image
+        for ax, item in zip(axes[1:], overlays):
+            overlay, name = item[0], item[1]
+            is_label = item[2] if len(item) > 2 else (overlay.max() > 1)
+            ax.imshow(rgb)
+            if is_label:  # label image
                 masked = np.ma.masked_where(overlay == 0, overlay)
                 ax.imshow(masked, cmap="tab20", alpha=0.5, interpolation="nearest")
             else:  # binary mask
@@ -628,16 +717,28 @@ class AcinarImage:
 
     def _build_acinus_approx(self, nuclear_ch=_UNSET, membrane_ch=_UNSET,
                              extra_channels=_UNSET):
-        """Sum selected channels to approximate acinus extent (cached)."""
+        """Sum selected channels to approximate acinus extent (cached).
+
+        Automatically includes ``c3_channel`` and ``edu_channel`` when they
+        are set on the instance so that fluorescent signal from those stains
+        contributes to the acinus segmentation.
+        """
         if nuclear_ch is _UNSET:
             nuclear_ch = self.nuclear_channel
         if membrane_ch is _UNSET:
             membrane_ch = self.membrane_channel
         if extra_channels is _UNSET:
-            extra_channels = self.extra_acinus_channels
+            extra_channels = list(self.extra_acinus_channels) if self.extra_acinus_channels else []
+        else:
+            extra_channels = list(extra_channels) if extra_channels else []
+
+        # Always include C3 / EdU channels when available
+        for ch in (self.c3_channel, self.edu_channel):
+            if ch is not None and ch != nuclear_ch and ch != membrane_ch and ch not in extra_channels:
+                extra_channels.append(ch)
 
         key = (nuclear_ch, membrane_ch,
-               tuple(extra_channels) if extra_channels else ())
+               tuple(sorted(extra_channels)) if extra_channels else ())
         if key in self._acinus_approx_cache:
             return self._acinus_approx_cache[key]
 
@@ -650,12 +751,14 @@ class AcinarImage:
         self._acinus_approx_cache[key] = combined
         return combined
 
-    def _segment(self, acinus_approx, smoothing_sigma=4.0):
+    def _segment(self, acinus_approx, smoothing_sigma=3.0):
         """Segment acinus and return (mask, pixel_size, flag)."""
         return segment_acinus(acinus_approx, self.spacing,
-                              smoothing_sigma=smoothing_sigma)
+                              smoothing_sigma=smoothing_sigma,
+                              qc_dir=self.qc_dir,
+                              filename=self.filename)
 
-    def _get_acinus_mask(self, extra_channels=None, smoothing_sigma=4.0):
+    def _get_acinus_mask(self, extra_channels=None, smoothing_sigma=3.0):
         """Cached acinus segmentation keyed by (extra_channels, sigma)."""
         key = (tuple(extra_channels) if extra_channels else (),
                smoothing_sigma)
@@ -684,7 +787,7 @@ class AcinarImage:
     #  Analysis methods
     # =====================================================================
 
-    def acinus_shape(self, smoothing_sigma=4.0):
+    def acinus_shape(self, smoothing_sigma=3.0):
         """Calculate acinus volume (µm³) and roundness."""
         acinus_mask, px, flag = self._get_acinus_mask(
             smoothing_sigma=smoothing_sigma)
@@ -707,14 +810,15 @@ class AcinarImage:
         raw_slice = self._mid_z(self._rescale_volume(acinus_approx))
         self._save_qc("acinus_shape", raw_slice,
                       [(self._mid_z(acinus_mask), "Acinus mask")],
-                      title_extra=f"vol={vol:.0f} µm³, round={roundness:.2f}")
+                      title_extra=f"vol={vol:.0f} µm³, round={roundness:.2f}",
+                      red_channel=self.membrane_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
 
         return pd.DataFrame({"vol_um": [vol], "roundness": [roundness], "flag": [flag]})
 
-    def cell_nuclear_shape(self, smoothing_sigma=4.0):
+    def cell_nuclear_shape(self, smoothing_sigma=3.0):
         """Segment cells/nuclei and compute volume, roundness, and neighbour info.
 
         Requires ``nuclear_mask_path`` and ``membrane_mask_path`` to be set.
@@ -775,7 +879,7 @@ class AcinarImage:
         self._save_qc("cell_nuclear_shape", raw_slice, [
             (self._mid_z(seg_nuc), "Nuclei labels"),
             (self._mid_z(seg_mem_exp), "Cell labels"),
-        ])
+        ], red_channel=self.membrane_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
@@ -784,7 +888,7 @@ class AcinarImage:
 
         return matching
 
-    def protein_polarisation(self, smoothing_sigma=11.0):
+    def protein_polarisation(self, smoothing_sigma=6.0):
         """Quantify protein intensity as a function of normalised radial distance.
 
         Requires ``protein_channel`` to be set.
@@ -825,7 +929,7 @@ class AcinarImage:
         raw_slice = self._mid_z(protein_rescaled)
         self._save_qc("protein_polarisation", raw_slice, [
             (self._mid_z(acinus_mask), "Acinus mask"),
-        ])
+        ], red_channel=self.protein_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
@@ -846,7 +950,7 @@ class AcinarImage:
 
         extra = [self.c3_channel]
         acinus_mask, px, flag = self._get_acinus_mask(
-            extra_channels=extra, smoothing_sigma=12.0)
+            extra_channels=extra, smoothing_sigma=6.0)
 
         c3_mask = self._load_mask_rescaled(self.c3_mask_path)
         nuclear_mask = self._load_mask_rescaled(self.nuclear_mask_path)
@@ -902,9 +1006,9 @@ class AcinarImage:
             self.image[:, self.c3_channel, :, :]))
         self._save_qc("apoptosis", raw_slice, [
             (self._mid_z(acinus_mask), "Acinus mask"),
-            (self._mid_z(c3_labels), "C3 labels"),
-            (self._mid_z(nuclear_labels), "Nuclear labels"),
-        ])
+            (self._mid_z(c3_labels), "C3 labels", True),
+            (self._mid_z(nuclear_labels), "Nuclear labels", True),
+        ], red_channel=self.c3_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
@@ -932,7 +1036,7 @@ class AcinarImage:
 
         extra = [self.c3_channel]
         acinus_mask, px, flag = self._get_acinus_mask(
-            extra_channels=extra, smoothing_sigma=12.0)
+            extra_channels=extra, smoothing_sigma=6.0)
 
         c3_raw = self._load_mask_raw(self.c3_mask_path)
         nuclear_raw = self._load_mask_raw(self.nuclear_mask_path)
@@ -1034,9 +1138,9 @@ class AcinarImage:
             self.image[:, self.proximity_protein_channel, :, :]))
         self._save_qc("protein_proximity", raw_slice, [
             (self._mid_z(acinus_mask), "Acinus mask"),
-            (self._mid_z(c3_labels), "Dying (C3)"),
-            (self._mid_z(live_labels), "Non-dying"),
-        ])
+            (self._mid_z(c3_labels), "Dying (C3)", True),
+            (self._mid_z(live_labels), "Non-dying", True),
+        ], red_channel=self.proximity_protein_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
@@ -1145,9 +1249,9 @@ class AcinarImage:
             self.image[:, self.edu_channel, :, :]))
         self._save_qc("proliferation", raw_slice, [
             (self._mid_z(acinus_mask), "Acinus mask"),
-            (self._mid_z(dividing_labels), "Dividing (EdU+)"),
-            (self._mid_z(non_dividing_labels), "Non-dividing"),
-        ])
+            (self._mid_z(dividing_labels), "Dividing (EdU+)", True),
+            (self._mid_z(non_dividing_labels), "Non-dividing", True),
+        ], red_channel=self.edu_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
@@ -1303,7 +1407,7 @@ class AcinarImage:
             (self._mid_z(acinus_mask), "Acinus mask"),
             (self._mid_z(seg_mem_exp), "Cell labels"),
             (mito_slice, "Mito labels"),
-        ])
+        ], red_channel=self.mito_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
