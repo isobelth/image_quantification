@@ -12,15 +12,20 @@ Launch from a notebook (run ``%gui qt`` first)::
 Or standalone::
 
     python acinar_gui.py
+
+The GUI collects all settings (folders, channels, analyses) and validates
+them.  When the user clicks "Run Analysis" the window closes and
+``batch_analyse`` runs directly — with full tqdm progress visible in
+the terminal/notebook.
 """
 
-import threading
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
 from magicgui import magicgui
-from magicgui.widgets import Container, Label, TextEdit, ProgressBar
+from magicgui.widgets import Container, Label, TextEdit
 
 from acinar_analysis import batch_analyse
 
@@ -88,11 +93,17 @@ _CHANNEL_LABELS = {
 # ---------------------------------------------------------------------------
 
 class AcinarAnalysisGUI:
-    """Standalone magicgui-based interface for batch acinar image analysis."""
+    """Standalone magicgui-based interface for batch acinar image analysis.
+
+    Collects all settings, validates them, then closes the window and
+    runs ``batch_analyse`` directly so tqdm progress is visible in the
+    terminal / notebook output.
+    """
 
     def __init__(self):
-        self._running = False
-        self._results: List[pd.DataFrame] = []
+        self._results: Optional[Dict[str, pd.DataFrame]] = None
+        self._config: Optional[dict] = None  # filled on Run click
+        self._closed = False
 
         # ---- Build magicgui panels ----
 
@@ -104,6 +115,7 @@ class AcinarAnalysisGUI:
             c3_mask_dir={"label": "C3 Mask Folder", "mode": "d"},
             edu_mask_dir={"label": "EdU Mask Folder", "mode": "d"},
             mito_mask_dir={"label": "Mito Mask Folder", "mode": "d"},
+            output_dir={"label": "Output Directory", "mode": "d"},
             call_button=False,
         )
 
@@ -131,17 +143,14 @@ class AcinarAnalysisGUI:
             proliferation={"label": "Proliferation (EdU)", "value": False},
             mitochondria={"label": "Mitochondria", "value": False},
             save_qc_plots={"label": "Save QC Plots", "value": True},
-            output_csv={"label": "Output CSV", "mode": "w", "value": "acinar_results.csv"},
             call_button=False,
         )
 
         self._btn_run = magicgui(self._on_run_clicked, call_button="Run Analysis")
 
-        self.progress_bar = ProgressBar(min=0, max=100, value=0, label="Progress")
-        self.progress_bar.visible = False
-
         # Build welcome / requirements text
-        welcome = "Select folders, set channels, tick analyses, click Run.\n\n"
+        welcome = "Select folders, set channels, tick analyses, click Run.\n"
+        welcome += "The window will close and analysis will run with progress in the terminal.\n\n"
         for info in _REQUIREMENTS.values():
             reqs = [_FOLDER_LABELS[f] for f in info["folders"]]
             reqs += [f"{_CHANNEL_LABELS[c]} >= 0" for c in info["channels"]]
@@ -166,13 +175,21 @@ class AcinarAnalysisGUI:
                 self.analysis_panel,
                 Label(value="── Run ──"),
                 self._btn_run,
-                self.progress_bar,
                 self._log_widget,
             ],
             label="Acinar Analysis",
         )
         self.widget.native.setWindowTitle("Acinar Analysis")
         self.widget.native.setMinimumWidth(520)
+
+        # Ensure _closed is set if the user closes the window via X button
+        _self = self
+        _orig_close = self.widget.native.closeEvent
+        def _on_native_close(event):
+            _self._closed = True
+            if _orig_close:
+                _orig_close(event)
+        self.widget.native.closeEvent = _on_native_close
 
         self.folder_panel.image_dir.changed.connect(self._on_image_dir_changed)
 
@@ -190,6 +207,7 @@ class AcinarAnalysisGUI:
         c3_mask_dir: Path = Path(),
         edu_mask_dir: Path = Path(),
         mito_mask_dir: Path = Path(),
+        output_dir: Path = Path(),
     ):
         return None
 
@@ -203,7 +221,6 @@ class AcinarAnalysisGUI:
         proliferation: bool = False,
         mitochondria: bool = False,
         save_qc_plots: bool = True,
-        output_csv: Path = Path("acinar_results.csv"),
     ):
         return None
 
@@ -222,28 +239,12 @@ class AcinarAnalysisGUI:
         return None
 
     # ------------------------------------------------------------------
-    #  Running state helpers
+    #  Helpers
     # ------------------------------------------------------------------
-
-    def _set_running(self, running: bool):
-        self._running = running
-        self._btn_run.call_button.enabled = not running
-        self.progress_bar.visible = running
-        if running:
-            self.progress_bar.value = 0
-
-    def _update_progress(self, completed: int, total: int):
-        self.progress_bar.max = total
-        self.progress_bar.value = completed
-        self._log(f"  [PROGRESS] {completed}/{total} images processed")
 
     def _log(self, msg: str):
         cur = self._log_widget.value.rstrip()
         self._log_widget.value = (cur + "\n" + msg) if cur else msg
-
-    # ------------------------------------------------------------------
-    #  Read GUI values
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _dir_or_none(path_value) -> Optional[str]:
@@ -261,7 +262,7 @@ class AcinarAnalysisGUI:
             k: self._dir_or_none(getattr(self.folder_panel, k).value)
             for k in (
                 "image_dir", "nuclear_mask_dir", "membrane_mask_dir",
-                "c3_mask_dir", "edu_mask_dir", "mito_mask_dir",
+                "c3_mask_dir", "edu_mask_dir", "mito_mask_dir", "output_dir",
             )
         }
 
@@ -285,6 +286,8 @@ class AcinarAnalysisGUI:
             return errors
         if folders.get("image_dir") is None:
             errors.append("Image Folder is required.")
+        if folders.get("output_dir") is None:
+            errors.append("Output Directory is required.")
         for name in analyses:
             reqs = _REQUIREMENTS[name]
             for fkey in reqs["folders"]:
@@ -308,10 +311,7 @@ class AcinarAnalysisGUI:
         self._log(f"[INFO] Found {n} .{ext} file(s) in {d}")
 
     def _on_run_clicked(self):
-        if self._running:
-            self._log("[WARN] Analysis already running.")
-            return
-
+        """Validate settings, store config, then close the window."""
         analyses = self._selected_analyses()
         folders = self._read_folders()
         channels = self._read_channels()
@@ -323,62 +323,77 @@ class AcinarAnalysisGUI:
                 self._log(f"  [ERROR] {e}")
             return
 
-        out_path = str(self.analysis_panel.output_csv.value)
-        if not out_path.lower().endswith(".csv"):
-            out_path += ".csv"
+        # Store the validated configuration
+        output_dir = folders.pop("output_dir")
+        output_csv = str(Path(output_dir) / "acinar_results.csv")
+        qc_dir = str(Path(output_dir) / "qc_plots") if self.analysis_panel.save_qc_plots.value else None
 
-        qc_dir = None
-        if self.analysis_panel.save_qc_plots.value:
-            qc_dir = str(Path(out_path).parent / "qc_plots")
+        self._config = {
+            "image_dir": folders["image_dir"],
+            "analyses": analyses,
+            "file_extension": str(self.channel_panel.file_extension.value),
+            "n_jobs": int(self.channel_panel.n_jobs.value),
+            "output_csv": output_csv,
+            "nuclear_mask_dir": folders.get("nuclear_mask_dir"),
+            "membrane_mask_dir": folders.get("membrane_mask_dir"),
+            "c3_mask_dir": folders.get("c3_mask_dir"),
+            "edu_mask_dir": folders.get("edu_mask_dir"),
+            "mito_mask_dir": folders.get("mito_mask_dir"),
+            "nuclear_channel": channels.get("nuclear_channel", 0),
+            "membrane_channel": channels.get("membrane_channel"),
+            "protein_channel": channels.get("protein_channel"),
+            "c3_channel": channels.get("c3_channel"),
+            "edu_channel": channels.get("edu_channel"),
+            "mito_channel": channels.get("mito_channel"),
+            "proximity_protein_channel": channels.get("proximity_protein_channel"),
+            "qc_dir": qc_dir,
+        }
 
         self._log("=" * 50)
         self._log(f"[INFO] Analyses: {', '.join(analyses)}")
-        self._log(f"[INFO] Images : {folders['image_dir']}")
-        self._log(f"[INFO] Output : {out_path}")
+        self._log(f"[INFO] Images  : {folders['image_dir']}")
+        self._log(f"[INFO] Output  : {output_csv}")
         if qc_dir:
             self._log(f"[INFO] QC plots: {qc_dir}")
-        self._set_running(True)
+        self._log("[INFO] Closing GUI and starting analysis...")
 
-        threading.Thread(
-            target=self._run_batch,
-            args=(folders, channels, analyses, out_path, qc_dir),
-            daemon=True,
-        ).start()
+        # Close the GUI window
+        self._closed = True
+        self.widget.close()
 
-    def _run_batch(self, folders, channels, analyses, out_path, qc_dir):
-        try:
-            results = batch_analyse(
-                image_dir=folders["image_dir"],
-                analyses=analyses,
-                file_extension=str(self.channel_panel.file_extension.value),
-                n_jobs=int(self.channel_panel.n_jobs.value),
-                output_csv=out_path,
-                nuclear_mask_dir=folders.get("nuclear_mask_dir"),
-                membrane_mask_dir=folders.get("membrane_mask_dir"),
-                c3_mask_dir=folders.get("c3_mask_dir"),
-                edu_mask_dir=folders.get("edu_mask_dir"),
-                mito_mask_dir=folders.get("mito_mask_dir"),
-                nuclear_channel=channels.get("nuclear_channel", 0),
-                membrane_channel=channels.get("membrane_channel"),
-                protein_channel=channels.get("protein_channel"),
-                c3_channel=channels.get("c3_channel"),
-                edu_channel=channels.get("edu_channel"),
-                mito_channel=channels.get("mito_channel"),
-                proximity_protein_channel=channels.get("proximity_protein_channel"),
-                qc_dir=qc_dir,
-                progress_callback=self._update_progress,
-            )
-            for name, df in results.items():
-                n = len(df) if df is not None else 0
-                self._log(f"  [OK] {name}: {n} row(s)")
-                if df is not None and not df.empty:
-                    self._results.append(df)
-            self._log(f"[OK] Complete. CSVs saved with prefix: {out_path}")
-        except Exception as exc:
-            self._log(f"[ERROR] {type(exc).__name__}: {exc}")
-        finally:
-            self._set_running(False)
-            self._log("[INFO] Ready for next run.\n")
+    # ------------------------------------------------------------------
+    #  Public methods
+    # ------------------------------------------------------------------
+
+    @property
+    def config(self) -> Optional[dict]:
+        """Returns the validated config after the user clicks Run, or None."""
+        return self._config
+
+    def run_analysis(self) -> Optional[Dict[str, pd.DataFrame]]:
+        """Run batch_analyse using the collected config. Call after GUI closes."""
+        if self._config is None:
+            print("[ERROR] No configuration set. Did the user click Run Analysis?")
+            return None
+
+        print("=" * 60)
+        print(f"Running analyses: {', '.join(self._config['analyses'])}")
+        print(f"Image folder:     {self._config['image_dir']}")
+        print(f"Output CSV:       {self._config['output_csv']}")
+        if self._config["qc_dir"]:
+            print(f"QC plots:         {self._config['qc_dir']}")
+        print("=" * 60)
+
+        self._results = batch_analyse(**self._config)
+
+        print("\n" + "=" * 60)
+        print("COMPLETE!")
+        for name, df in self._results.items():
+            n = len(df) if df is not None else 0
+            print(f"  {name}: {n} row(s)")
+        print("=" * 60)
+
+        return self._results
 
 
 # ---------------------------------------------------------------------------
@@ -386,12 +401,56 @@ class AcinarAnalysisGUI:
 # ---------------------------------------------------------------------------
 
 def launch() -> AcinarAnalysisGUI:
-    """Create and show the Acinar Analysis GUI. Returns the app instance."""
+    """Create and show the Acinar Analysis GUI.
+
+    Returns the app instance.  After the user clicks 'Run Analysis',
+    the window closes and you can call ``app.run_analysis()`` to execute
+    the batch processing.
+
+    Example (notebook)::
+
+        %gui qt
+        from acinar_gui import launch
+        app = launch()
+        # ... user configures and clicks Run ...
+        # Then in the next cell:
+        results = app.run_analysis()
+    """
     return AcinarAnalysisGUI()
+
+
+def launch_and_run():
+    """Launch the GUI, wait for the user to click Run, then execute the analysis.
+
+    This is the simplest way to use the GUI — one call does everything.
+    Intended for use from a notebook cell::
+
+        %gui qt
+        from acinar_gui import launch_and_run
+        results = launch_and_run()
+    """
+    import time
+    from qtpy.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+
+    gui = AcinarAnalysisGUI()
+
+    # Process events until the GUI is closed
+    while not gui._closed:
+        app.processEvents()
+        time.sleep(0.05)  # prevent CPU spinning / re-entrancy
+
+    if gui.config is None:
+        print("[INFO] GUI closed without running analysis.")
+        return None
+
+    return gui.run_analysis()
 
 
 if __name__ == "__main__":
     from qtpy.QtWidgets import QApplication
     _qapp = QApplication.instance() or QApplication([])
-    gui = launch()
-    _qapp.exec_()
+    results = launch_and_run()
+    if results is None:
+        sys.exit(0)

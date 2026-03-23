@@ -158,6 +158,83 @@ def read_pixel_size(tif_path: str) -> List[float]:
     return [x, y, z]
 
 
+def add_image_details(df: pd.DataFrame, filename: str, flag: str) -> pd.DataFrame:
+    """
+    Add experimental details extracted from the filename to a DataFrame.
+
+    Parses the filename to infer experimental details such as well number,
+    imaging day, mechanical stiffness condition, and treatment type.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The DataFrame to which metadata will be added.
+    filename : str
+        The filename of the image (used to extract experimental details).
+    flag : str
+        A flag indicating any segmentation issues detected during processing.
+
+    Returns
+    -------
+    pd.DataFrame
+        The updated DataFrame with added metadata columns.
+    """
+    fn = filename.lower().replace("_", "")
+    df["filename"] = filename
+    df["flag"] = flag
+
+    # Well number
+    if "well1" in fn:
+        df["well"] = 1
+    elif "well2" in fn:
+        df["well"] = 2
+    else:
+        df["well"] = np.nan
+
+    # Day
+    if "_d0" in filename.lower() or "d0" in fn:
+        df["day"] = 0
+    elif "d1" in fn:
+        df["day"] = 1
+    elif "_d3" in filename.lower() or "d3" in fn:
+        df["day"] = 3
+    else:
+        df["day"] = 7
+
+    # Cell type
+    if "wt" in fn:
+        df["cell_type"] = "WT"
+    elif "bad" in fn:
+        df["cell_type"] = "BADER"
+    else:
+        df["cell_type"] = "unknown"
+
+    # Stiffness
+    if "soft" in fn:
+        df["condition"] = "soft"
+    elif "stiff" in fn:
+        df["condition"] = "stiff"
+    else:
+        df["condition"] = "blank"
+
+    # Treatment
+    if "bleb" in fn:
+        df["treatment"] = "blebbistatin"
+    elif "4oht" in fn:
+        df["treatment"] = "4OHT"
+    elif "rock" in fn or "y27632" in fn:
+        df["treatment"] = "ROCKi"
+    elif "batimastat" in fn or "mmpi" in fn:
+        df["treatment"] = "batimastat"
+    elif "abt" in fn:
+        df["treatment"] = "ABT737"
+    else:
+        df["treatment"] = "untreated"
+
+    df["image_type"] = df["condition"].astype(str) + ", d" + df["day"].astype(str)
+    return df
+
+
 # ---------------------------------------------------------------------------
 #  Core acinus segmentation (shared by every analysis)
 # ---------------------------------------------------------------------------
@@ -1266,12 +1343,15 @@ class AcinarImage:
                 filtered = {k: v for k, v in kwargs.items()
                             if k in sig.parameters and v is not None}
                 df = method(**filtered)
-                df["filename"] = self.filename
+                # Add filename and parsed experimental metadata
+                flag = df["flag"].iloc[0] if "flag" in df.columns and len(df) > 0 else "None"
+                df = add_image_details(df, self.filename, flag)
                 results[name] = df
             except Exception as e:
-                results[name] = pd.DataFrame(
+                err_df = pd.DataFrame(
                     {"filename": [self.filename], "flag": [f"FAILED: {e}"]}
                 )
+                results[name] = err_df
 
         return results
 
@@ -1336,13 +1416,6 @@ def batch_analyse(
                    if k in _CONSTRUCTOR_KEYS and v is not None}
     analysis_kwargs = {k: v for k, v in kwargs.items()
                        if k not in _CONSTRUCTOR_KEYS}
-
-
-    # Disable QC plots in parallel mode to avoid Qt/matplotlib threading errors
-    _save_qc = analysis_kwargs.get('save_qc_plots', True)
-    if n_jobs != 1 and _save_qc:
-        print("[WARN] Disabling QC plot saving in parallel mode (n_jobs > 1) to avoid Qt/matplotlib errors.")
-        analysis_kwargs['save_qc_plots'] = False
 
     def _process(i):
         img = AcinarImage(
