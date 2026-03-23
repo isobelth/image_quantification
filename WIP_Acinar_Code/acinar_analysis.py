@@ -364,7 +364,7 @@ def segment_acinus(
         sphericity = eigvals["inertia_tensor_eigvals-2"][0] / eigvals["inertia_tensor_eigvals-0"][0]
         if sphericity < min_sphericity:
             flag = "multiple_acini_split"
-            smoothed2 = gaussian(clipped, sigma=5)
+            smoothed2 = gaussian(clipped, sigma=4)
             thresh2 = threshold_triangle(smoothed2)
             binary2 = smoothed2 > thresh2
             binary2 = remove_small_holes(binary2, area_threshold=100000)
