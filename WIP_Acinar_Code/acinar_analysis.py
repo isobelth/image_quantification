@@ -906,7 +906,8 @@ class AcinarImage:
         protein_rescaled = self._rescale_volume(
             self.image[:, self.protein_channel, :, :]
         )
-        protein_rescaled = protein_rescaled * acinus_mask
+        expanded_acinus_mask = expand_labels(acinus_mask, distance=5)
+        protein_rescaled = protein_rescaled * expanded_acinus_mask
 
         # Distance map normalised by equivalent sphere radius
         distance = ndi.distance_transform_edt(acinus_mask)
@@ -1098,7 +1099,8 @@ class AcinarImage:
             offset = live_labels.max()
             c3_offset = np.where(c3_labels > 0, c3_labels + offset, 0)
             combined = np.where(combined == 0, c3_offset, combined)
-        estimated_territories = acinus_mask * expand_labels(combined, distance=20)
+        expanded_acinus_mask = expand_labels(acinus_mask, distance=5)
+        estimated_territories = expanded_acinus_mask * expand_labels(combined, distance=20)
 
         search_px = max(1, int(search_radius_um / px))
         prox_rows = []
