@@ -281,7 +281,6 @@ def segment_acinus(
     threshold_method = "li"
 
     # --- Step 2: Per-slice 2D hole fill + keep largest per slice ---
-    # Handles cup/shell shapes that defeat 3D binary_fill_holes.
     # Each slice is filled independently, then only the single largest
     # component is kept to avoid capturing proximal acini.
     for z in range(acinus_mask.shape[0]):
@@ -505,7 +504,7 @@ def _match_nuclei_to_cells(
 
 
 # ===========================================================================
-#  AcinarImage â€” main class
+#  AcinarImage, main class
 # ===========================================================================
 
 class AcinarImage:
