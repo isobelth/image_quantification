@@ -327,6 +327,13 @@ def segment_acinus(
     # --- Step 4: Final erosion to offset any expansion from smoothing/filling ---
     acinus_mask = erosion(acinus_mask > 0, ball(5)).astype(np.int32)
 
+    # Keep only the largest 3-D component (erosion can fragment thin bridges)
+    lbl_post = label(acinus_mask)
+    if lbl_post.max() > 1:
+        rps_post = regionprops_table(lbl_post, properties=("label", "area"))
+        keep_post = rps_post["label"][np.argmax(rps_post["area"])]
+        acinus_mask = np.where(lbl_post == keep_post, 1, 0).astype(np.int32)
+
     # --- Compute final solidity for QC ---
     def _slice_solidity(mask):
         mid = mask.shape[0] // 2
@@ -485,8 +492,8 @@ def _match_nuclei_to_cells(
     match_df = match_df.merge(cell_p).merge(nuc_p)
     vx3 = new_pixel_size ** 3
     match_df["nucleus_cell_volume_ratio"] = match_df["nucleus_volume"] / match_df["cell_volume"]
-    match_df["nucleus_volume_um"] = match_df["nucleus_volume"] * vx3
-    match_df["cell_volume_um"] = match_df["cell_volume"] * vx3
+    match_df["nucleus_volume_um3"] = match_df["nucleus_volume"] * vx3
+    match_df["cell_volume_um3"] = match_df["cell_volume"] * vx3
     match_df["cell_roundness"] = match_df["cell_eig2"] / match_df["cell_eig0"]
     match_df["nucleus_roundness"] = match_df["nuc_eig2"] / match_df["nuc_eig0"]
     match_df.drop(
@@ -789,13 +796,13 @@ class AcinarImage:
     #  Analysis methods
     # =====================================================================
 
-    def acinus_shape(self, smoothing_sigma=3.0):
+    def acinus_shape(self):
         """Calculate acinus volume (ÂµmÂ³) and roundness."""
         acinus_mask, px, flag, threshold_method, solidity = self._get_acinus_mask()
 
         regions = regionprops(acinus_mask)
         if not regions:
-            return pd.DataFrame({"vol_um": [np.nan], "roundness": [np.nan],
+            return pd.DataFrame({"acinus_volume_um3": [np.nan], "acinus_roundness": [np.nan],
                                  "flag": ["no_acinus"]})
 
         r = regions[0]
@@ -815,9 +822,9 @@ class AcinarImage:
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
 
-        return pd.DataFrame({"vol_um": [vol], "roundness": [roundness], "flag": [flag]})
+        return pd.DataFrame({"acinus_volume_um3": [vol], "acinus_roundness": [roundness], "flag": [flag]})
 
-    def cell_nuclear_shape(self, smoothing_sigma=3.0):
+    def cell_nuclear_shape(self):
         """Segment cells/nuclei and compute volume, roundness, and neighbour info.
 
         Requires ``nuclear_mask_path`` and ``membrane_mask_path`` to be set.
@@ -885,7 +892,7 @@ class AcinarImage:
 
         return matching
 
-    def protein_polarisation(self, smoothing_sigma=6.0):
+    def protein_polarisation(self):
         """Quantify protein intensity as a function of normalised radial distance.
 
         Requires ``protein_channel`` to be set.
@@ -895,9 +902,6 @@ class AcinarImage:
                 "protein_polarisation requires 'protein_channel' to be set."
             )
 
-        extra = [self.protein_channel]
-        if self.extra_acinus_channels:
-            extra.extend(self.extra_acinus_channels)
         acinus_mask, px, flag, _thresh, _sol = self._get_acinus_mask()
 
         protein_rescaled = self._rescale_volume(
@@ -943,7 +947,6 @@ class AcinarImage:
                 "apoptosis requires both 'c3_mask_path' and 'nuclear_mask_path'."
             )
 
-        extra = [self.c3_channel]
         acinus_mask, px, flag, _thresh, _sol = self._get_acinus_mask()
 
         c3_mask = self._load_mask_rescaled(self.c3_mask_path)
@@ -973,11 +976,11 @@ class AcinarImage:
         if c3_props.empty:
             c3_props = pd.DataFrame({
                 "label": ["no_c3"], "centroid-0": [np.nan], "centroid-1": [np.nan],
-                "centroid-2": [np.nan], "c3_volume_um": [np.nan],
+                "centroid-2": [np.nan], "c3_volume_um3": [np.nan],
                 "normalised_distance": [np.nan],
             })
         else:
-            c3_props["c3_volume_um"] = c3_props["area"] * px ** 3
+            c3_props["c3_volume_um3"] = c3_props["area"] * px ** 3
             c3_props["normalised_distance"] = c3_props.apply(
                 lambda row: dist_scaled[
                     int(round(row["centroid-0"])),
@@ -988,7 +991,7 @@ class AcinarImage:
             )
             c3_props.drop("area", axis=1, inplace=True)
 
-        c3_props["acinus_volume_um"] = acinus_vol
+        c3_props["acinus_volume_um3"] = acinus_vol
         c3_props["acinus_roundness"] = acinus_round
         c3_props["number_of_nuclei"] = pd.DataFrame(
             regionprops_table(nuclear_labels, properties=("label",))
@@ -1026,7 +1029,6 @@ class AcinarImage:
                 "protein_proximity requires 'proximity_protein_channel' to be set."
             )
 
-        extra = [self.c3_channel]
         acinus_mask, px, flag, _thresh, _sol = self._get_acinus_mask()
 
         c3_raw = self._load_mask_raw(self.c3_mask_path)
@@ -1158,7 +1160,6 @@ class AcinarImage:
                 "proliferation requires 'edu_channel' to be set."
             )
 
-        extra = [self.edu_channel]
         acinus_mask, px, flag, _thresh, _sol = self._get_acinus_mask()
 
         edu_mask = self._load_mask_rescaled(self.edu_mask_path)
@@ -1217,7 +1218,7 @@ class AcinarImage:
                 "dividing": [np.nan],
             })
         else:
-            all_cells["volume_um3"] = all_cells["area"] * px ** 3
+            all_cells["cell_volume_um3"] = all_cells["area"] * px ** 3
             all_cells.drop("area", axis=1, inplace=True)
             all_cells["normalised_distance"] = all_cells.apply(
                 lambda row: dist_scaled[
@@ -1246,8 +1247,7 @@ class AcinarImage:
 
         return all_cells
 
-    def mitochondria(self, smoothing_sigma=4.0,
-                     mito_min_object_size=10):
+    def mitochondria(self, mito_min_object_size=10):
         """Per-cell mitochondria count, volume, and distance from nucleus.
 
         Requires ``nuclear_mask_path``, ``membrane_mask_path``, and
@@ -1356,8 +1356,8 @@ class AcinarImage:
                 "number_of_mito": n_mito,
                 "mito_volume_um3": total_mito_vol,
                 "mito_cell_vol_ratio": (
-                    total_mito_vol / row["cell_volume_um"]
-                    if row["cell_volume_um"] > 0 else np.nan
+                    total_mito_vol / row["cell_volume_um3"]
+                    if row["cell_volume_um3"] > 0 else np.nan
                 ),
                 "mean_mito_distance_ratio": mean_mito_ratio,
             })
@@ -1415,8 +1415,8 @@ class AcinarImage:
             ``"protein_polarisation"``, ``"apoptosis"``, ``"protein_proximity"``,
             ``"proliferation"``, ``"mitochondria"``.
         **kwargs
-            Analysis-specific overrides (e.g. ``smoothing_sigma``,
-            ``search_radius_um``).  Only kwargs matching each method's
+            Analysis-specific overrides (e.g. ``search_radius_um``,
+            ``c3_separation_um``).  Only kwargs matching each method's
             signature are forwarded.
         """
         unknown = set(analyses) - VALID_ANALYSES

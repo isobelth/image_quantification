@@ -59,10 +59,10 @@ COLOUR_MAP = {
 #  Analysis type detection from CSV columns
 # ---------------------------------------------------------------------------
 _ANALYSIS_SIGNATURES = {
-    "acinus_shape": {"vol_um", "roundness"},
-    "cell_nuclear_shape": {"nucleus_volume_um", "cell_volume_um", "cell_roundness"},
+    "acinus_shape": {"acinus_volume_um3", "acinus_roundness"},
+    "cell_nuclear_shape": {"nucleus_volume_um3", "cell_volume_um3", "cell_roundness"},
     "protein_polarisation": {"rounded_distance", "protein_intensity"},
-    "apoptosis": {"c3_volume_um", "normalised_distance", "number_of_nuclei"},
+    "apoptosis": {"c3_volume_um3", "normalised_distance", "number_of_nuclei"},
     "protein_proximity": {"dying", "proximity_intensity_in_cell"},
     "proliferation": {"dividing", "number_dividing"},
     "mitochondria": {"number_of_mito", "mito_volume_um3", "mito_cell_vol_ratio"},
@@ -70,14 +70,14 @@ _ANALYSIS_SIGNATURES = {
 
 # Which columns are numeric and meaningful to plot for each analysis
 _PLOTTABLE_COLUMNS = {
-    "acinus_shape": ["vol_um", "roundness"],
+    "acinus_shape": ["acinus_volume_um3", "acinus_roundness"],
     "cell_nuclear_shape": [
-        "nucleus_volume_um", "cell_volume_um", "nucleus_cell_volume_ratio",
+        "nucleus_volume_um3", "cell_volume_um3", "nucleus_cell_volume_ratio",
         "cell_roundness", "nucleus_roundness",
     ],
     "protein_polarisation": ["protein_intensity"],
     "apoptosis": [
-        "c3_volume_um", "normalised_distance", "number_of_nuclei",
+        "c3_volume_um3", "normalised_distance", "number_of_nuclei",
     ],
     "protein_proximity": [
         "proximity_intensity_in_cell", "proximity_mean_intensity_in_cell",
