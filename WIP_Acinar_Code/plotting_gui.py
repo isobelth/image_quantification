@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import colorsys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -27,10 +28,28 @@ import seaborn as sns
 from magicgui import magicgui
 from magicgui.widgets import Container, Label, TextEdit
 from matplotlib.patches import Patch
+from PIL import ImageColor
 
 # ---------------------------------------------------------------------------
-#  Colour scheme (matches existing publication style)
+#  Custom colour palette
 # ---------------------------------------------------------------------------
+MYCOL = ["red", "darkorange", "yellow", "limegreen", "dodgerblue", "darkviolet", "deeppink"]
+
+
+def create_n_valued_palette(base_color_hex, n=14):
+    """Generate *n* RGB colours by varying lightness of a base colour."""
+    r, g, b = ImageColor.getcolor(base_color_hex, "RGB")
+    r, g, b = r / 255, g / 255, b / 255
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    adjustments = np.linspace(0.6, 1.4, n)
+    return [colorsys.hls_to_rgb(h, min(max(l * a, 0), 1), s) for a in adjustments]
+
+
+palette_14_red = create_n_valued_palette("#FF0000")
+palette_14_limegreen = create_n_valued_palette("#32CD32")
+palette_14_dodgerblue = create_n_valued_palette("#1E90FF")
+
+# Condition → colour mapping (red / limegreen / dodgerblue from the palette)
 COLOUR_MAP = {
     "blank": "red",
     "soft": "limegreen",

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unified Acinar Analysis Module
 ==============================
 Isobel Taylor-Hearn, 2023-2024
@@ -68,7 +68,6 @@ from skimage.filters import gaussian, threshold_li, threshold_otsu, threshold_tr
 from skimage.measure import label, regionprops, regionprops_table
 from skimage.morphology import (
     ball,
-    closing,
     dilation,
     erosion,
     opening,
@@ -269,23 +268,7 @@ def segment_acinus(
     )
     smoothed = gaussian(clipped, sigma=smoothing_sigma)
 
-    # Save try_all_threshold QC image on mid-Z slice
-    if qc_dir is not None:
-        from skimage.filters import try_all_threshold
-        from matplotlib.figure import Figure
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        mid_z = smoothed[smoothed.shape[0] // 2]
-        fig, axes = try_all_threshold(mid_z, verbose=False)
-        FigureCanvasAgg(fig)
-        stem = pathlib.Path(filename).stem if filename else "unknown"
-        fig.suptitle(f"{stem} â€” threshold comparison (sigma={smoothing_sigma})", fontsize=10)
-        fig.tight_layout()
-        qc_path = pathlib.Path(qc_dir)
-        qc_path.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(qc_path / f"{stem}_try_all_threshold.png"),
-                    dpi=150, bbox_inches="tight")
-
-    # --- Primary threshold: Li ---
+    # --- Step 1: Li threshold, keep largest component ---
     thresh = threshold_li(smoothed)
     binary = smoothed > thresh
     binary = remove_small_holes(binary, area_threshold=100000)
@@ -295,67 +278,15 @@ def segment_acinus(
     props = regionprops_table(labelled, properties=("label", "area"))
     keep = props["label"][np.argmax(props["area"])]
     acinus_mask = np.where(labelled == keep, 1, 0).astype(np.int32)
-
-    # Solidity check on central 2D slices (convex-hull based).
-    # binary_fill_holes misses mug-shaped masks that are open on one end,
-    # so we instead sample a few Z-slices near the centre and compute true
-    # 2D solidity (area / convex_area) which catches ring cross-sections.
-    mid_z = acinus_mask.shape[0] // 2
-    offsets = [0, -1, 1, -2, 2]  # centre, then +/-1, +/-2
-    slice_solidities = []
-    for off in offsets:
-        z = mid_z + off
-        if 0 <= z < acinus_mask.shape[0]:
-            sl = acinus_mask[z] > 0
-            if sl.any():
-                rps = regionprops(label(sl.astype(np.int32)))
-                if rps:
-                    largest = max(rps, key=lambda r: r.area)
-                    slice_solidities.append(largest.solidity)
-    solidity = float(np.median(slice_solidities)) if slice_solidities else 1.0
     threshold_method = "li"
 
-    if solidity < 0.99:
-        # Li threshold produced a hollow / shell-like mask â€” retry with triangle
-        threshold_method = "triangle_fallback"
-        thresh = threshold_triangle(smoothed)
-        binary = smoothed > thresh
-        binary = remove_small_holes(binary, area_threshold=100000)
-        binary = remove_small_objects(binary, min_size=10000)
+    # --- Step 2: Per-slice 2D hole fill ---
+    # Handles cup/shell shapes that defeat 3D binary_fill_holes.
+    # Each slice is filled independently  fast and no risk of merging neighbours.
+    for z in range(acinus_mask.shape[0]):
+        acinus_mask[z] = ndi.binary_fill_holes(acinus_mask[z]).astype(np.int32)
 
-        labelled = label(binary)
-        props = regionprops_table(labelled, properties=("label", "area"))
-        keep = props["label"][np.argmax(props["area"])]
-        acinus_mask = np.where(labelled == keep, 1, 0).astype(np.int32)
-
-    # If the acinus is still hollow, fill the interior by drawing a sphere
-    # at the centre of mass.  Re-check solidity on central slices.
-    mid_z2 = acinus_mask.shape[0] // 2
-    slice_sol2 = []
-    for off in [0, -1, 1, -2, 2]:
-        z = mid_z2 + off
-        if 0 <= z < acinus_mask.shape[0]:
-            sl = acinus_mask[z] > 0
-            if sl.any():
-                rps = regionprops(label(sl.astype(np.int32)))
-                if rps:
-                    largest = max(rps, key=lambda r: r.area)
-                    slice_sol2.append(largest.solidity)
-    sol2 = float(np.median(slice_sol2)) if slice_sol2 else 1.0
-    mask_vol = int(acinus_mask.sum())
-    if mask_vol > 0 and sol2 < 0.85:
-        com = ndi.center_of_mass(acinus_mask)
-        radius = 0.5 * (3 * mask_vol / (4 * np.pi)) ** (1 / 3)
-        zz, yy, xx = np.ogrid[:acinus_mask.shape[0],
-                               :acinus_mask.shape[1],
-                               :acinus_mask.shape[2]]
-        dist_sq = ((zz - com[0]) ** 2 +
-                   (yy - com[1]) ** 2 +
-                   (xx - com[2]) ** 2)
-        acinus_mask = np.where(dist_sq <= radius ** 2, 1,
-                               acinus_mask).astype(np.int32)
-
-    # Test sphericity
+    # --- Step 3: Sphericity check  split merged acini if needed ---
     flag = "None"
     eigvals = regionprops_table(
         acinus_mask, properties=("label", "inertia_tensor_eigvals")
@@ -364,7 +295,7 @@ def segment_acinus(
         sphericity = eigvals["inertia_tensor_eigvals-2"][0] / eigvals["inertia_tensor_eigvals-0"][0]
         if sphericity < min_sphericity:
             flag = "multiple_acini_split"
-            smoothed2 = gaussian(clipped, sigma=4)
+            smoothed2 = gaussian(clipped, sigma=3)
             thresh2 = threshold_triangle(smoothed2)
             binary2 = smoothed2 > thresh2
             binary2 = remove_small_holes(binary2, area_threshold=100000)
@@ -376,31 +307,29 @@ def segment_acinus(
                 keep2 = props2["label"][np.argmax(props2["area"])]
                 acinus_mask = np.where(labelled2 == keep2, 1, 0).astype(np.int32)
                 acinus_mask = expand_labels(acinus_mask, distance=8)
+                # Re-fill per slice after the split
+                for z in range(acinus_mask.shape[0]):
+                    acinus_mask[z] = ndi.binary_fill_holes(acinus_mask[z]).astype(np.int32)
 
-    # If the triangle fallback was used, apply aggressive closing to seal
-    # the luminal space before the final erosion.
-    if threshold_method == "triangle_fallback":
-        acinus_mask = closing(acinus_mask > 0, ball(8)).astype(np.int32)
+    # --- Step 4: Final erosion to offset any expansion from smoothing/filling ---
+    acinus_mask = erosion(acinus_mask > 0, ball(5)).astype(np.int32)
 
-    # Final erosion to tighten the acinus boundary
-    acinus_mask = erosion(acinus_mask > 0, ball(3)).astype(np.int32)
+    # --- Compute final solidity for QC ---
+    def _slice_solidity(mask):
+        mid = mask.shape[0] // 2
+        sols = []
+        for off in [0, -2, 2, -4, 4]:
+            z = mid + off
+            if 0 <= z < mask.shape[0]:
+                sl = mask[z] > 0
+                if sl.any():
+                    rps = regionprops(label(sl.astype(np.int32)))
+                    if rps:
+                        largest = max(rps, key=lambda r: r.area)
+                        sols.append(largest.solidity)
+        return float(np.median(sols)) if sols else 1.0
 
-    # Fill any remaining internal holes to ensure a fully solid mask
-    acinus_mask = remove_small_holes(acinus_mask.astype(bool), area_threshold=1000000).astype(np.int32)
-
-    # Compute final solidity on central slices of the finished mask
-    mid_zf = acinus_mask.shape[0] // 2
-    final_solidities = []
-    for off in [0, -1, 1, -2, 2]:
-        z = mid_zf + off
-        if 0 <= z < acinus_mask.shape[0]:
-            sl = acinus_mask[z] > 0
-            if sl.any():
-                rps = regionprops(label(sl.astype(np.int32)))
-                if rps:
-                    largest = max(rps, key=lambda r: r.area)
-                    final_solidities.append(largest.solidity)
-    final_solidity = float(np.median(final_solidities)) if final_solidities else 1.0
+    final_solidity = _slice_solidity(acinus_mask)
 
     return acinus_mask, new_pixel_size, flag, threshold_method, final_solidity
 
@@ -758,10 +687,14 @@ class AcinarImage:
             is_label = item[2] if len(item) > 2 else (overlay.max() > 1)
             ax.imshow(rgb)
             if is_label:  # label image
+                from matplotlib.colors import ListedColormap
+                _qc_colours = ["red", "darkorange", "yellow", "limegreen",
+                               "dodgerblue", "darkviolet", "deeppink"]
+                _label_cmap = ListedColormap(_qc_colours)
                 masked = np.ma.masked_where(overlay == 0, overlay)
-                ax.imshow(masked, cmap="tab20", alpha=0.5, interpolation="nearest")
+                ax.imshow(masked, cmap=_label_cmap, alpha=0.5, interpolation="nearest")
             else:  # binary mask
-                ax.contour(overlay, levels=[0.5], colors="cyan", linewidths=0.8)
+                ax.contour(overlay, levels=[0.5], colors="darkorange", linewidths=0.8)
             ax.set_title(name)
             ax.axis("off")
 

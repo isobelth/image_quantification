@@ -296,6 +296,29 @@ class AcinarAnalysisGUI:
             for ckey in reqs["channels"]:
                 if channels.get(ckey) is None:
                     errors.append(f"'{reqs['label']}' requires {_CHANNEL_LABELS[ckey]} (>= 0).")
+
+        # Check that mask directories have the same number of files as images
+        ext = str(self.channel_panel.file_extension.value)
+        image_dir = folders.get("image_dir")
+        if image_dir is not None:
+            n_images = len(list(Path(image_dir).rglob(f"*.{ext}")))
+            mask_dirs = {
+                "nuclear_mask_dir": "Nuclear Mask Folder",
+                "membrane_mask_dir": "Membrane Mask Folder",
+                "c3_mask_dir": "C3 Mask Folder",
+                "edu_mask_dir": "EdU Mask Folder",
+                "mito_mask_dir": "Mito Mask Folder",
+            }
+            for key, label in mask_dirs.items():
+                d = folders.get(key)
+                if d is not None:
+                    n_masks = len(list(Path(d).rglob(f"*.{ext}")))
+                    if n_masks != n_images:
+                        errors.append(
+                            f"{label} has {n_masks} .{ext} file(s) but Image "
+                            f"Folder has {n_images}. They must match."
+                        )
+
         return errors
 
     # ------------------------------------------------------------------
