@@ -13,7 +13,6 @@ Plots d0 (blank) vs soft vs stiff across varying timepoints, using
 violin plots with split soft/stiff comparisons.
 """
 
-from __future__ import annotations
 
 import sys
 import time
@@ -117,6 +116,7 @@ def plot_violin_by_condition(
     parameter: str,
     analysis_name: str,
     save_dir: Optional[Path] = None,
+    fmt: str = "png",
 ) -> plt.Figure:
     """Plot split violins: d0 (blank) on left, then soft|stiff per timepoint.
 
@@ -193,8 +193,8 @@ def plot_violin_by_condition(
 
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        out = save_dir / f"{analysis_name}_{parameter}.pdf"
-        fig.savefig(str(out), bbox_inches="tight", transparent=True)
+        out = save_dir / f"{analysis_name}_{parameter}.{fmt}"
+        fig.savefig(str(out), bbox_inches="tight", transparent=True, dpi=300)
 
     return fig
 
@@ -204,6 +204,7 @@ def plot_swarm_by_condition(
     parameter: str,
     analysis_name: str,
     save_dir: Optional[Path] = None,
+    fmt: str = "png",
 ) -> plt.Figure:
     """Swarm + box plot for acinar-level (fewer points) data.
 
@@ -255,8 +256,8 @@ def plot_swarm_by_condition(
 
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        out = save_dir / f"{analysis_name}_{parameter}_swarm.pdf"
-        fig.savefig(str(out), bbox_inches="tight", transparent=True)
+        out = save_dir / f"{analysis_name}_{parameter}_swarm.{fmt}"
+        fig.savefig(str(out), bbox_inches="tight", transparent=True, dpi=300)
 
     return fig
 
@@ -264,6 +265,7 @@ def plot_swarm_by_condition(
 def plot_protein_polarisation(
     df: pd.DataFrame,
     save_dir: Optional[Path] = None,
+    fmt: str = "png",
 ) -> plt.Figure:
     """Line plot of protein intensity vs normalised radial distance.
 
@@ -329,8 +331,8 @@ def plot_protein_polarisation(
 
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(save_dir / "protein_polarisation.pdf"),
-                    bbox_inches="tight", transparent=True)
+        fig.savefig(str(save_dir / f"protein_polarisation.{fmt}"),
+                    bbox_inches="tight", transparent=True, dpi=300)
 
     return fig
 
@@ -360,6 +362,10 @@ class PlottingGUI:
             plot_type={
                 "label": "Plot Type",
                 "choices": ["violin", "swarm", "both"],
+            },
+            save_format={
+                "label": "Save Format",
+                "choices": ["png", "pdf", "svg", "tif"],
             },
             call_button=False,
         )
@@ -393,6 +399,7 @@ class PlottingGUI:
     @staticmethod
     def _plot_stub(
         plot_type: str = "violin",
+        save_format: str = "png",
     ):
         return None
 
@@ -413,9 +420,14 @@ class PlottingGUI:
         csv_folder = self._dir_or_none(self.folder_panel.csv_folder.value)
         output_folder = self._dir_or_none(self.folder_panel.output_folder.value)
         plot_type = str(self.plot_panel.plot_type.value)
+        save_format = str(self.plot_panel.save_format.value)
 
         if csv_folder is None:
             self._log("[ERROR] Please select a folder containing result CSVs.")
+            return
+
+        if output_folder is None:
+            self._log("[ERROR] Please select an output folder to save plots.")
             return
 
         csvs = list(csv_folder.glob("*.csv"))
@@ -427,12 +439,13 @@ class PlottingGUI:
             "csv_folder": csv_folder,
             "output_folder": output_folder,
             "plot_type": plot_type,
+            "save_format": save_format,
         }
 
         self._log(f"[INFO] Found {len(csvs)} CSV file(s)")
         self._log(f"[INFO] Plot type: {plot_type}")
-        if output_folder:
-            self._log(f"[INFO] Saving to: {output_folder}")
+        self._log(f"[INFO] Save format: {save_format}")
+        self._log(f"[INFO] Saving to: {output_folder}")
         self._log("[INFO] Closing GUI and generating plots...")
 
         self._closed = True
@@ -451,6 +464,7 @@ class PlottingGUI:
         csv_folder = self._config["csv_folder"]
         output_folder = self._config["output_folder"]
         plot_type = self._config["plot_type"]
+        save_format = self._config["save_format"]
 
         csvs = sorted(csv_folder.glob("*.csv"))
         figures = []
@@ -468,9 +482,10 @@ class PlottingGUI:
 
             # Special case: protein polarisation uses line plots
             if analysis == "protein_polarisation":
-                fig = plot_protein_polarisation(df, save_dir=output_folder)
+                fig = plot_protein_polarisation(df, save_dir=output_folder, fmt=save_format)
                 if fig is not None:
                     figures.append(fig)
+                    plt.close(fig)
                     print(f"  Created protein polarisation line plot")
                 continue
 
@@ -482,16 +497,18 @@ class PlottingGUI:
             for param in plottable:
                 if plot_type in ("violin", "both"):
                     fig = plot_violin_by_condition(
-                        df, param, analysis, save_dir=output_folder)
+                        df, param, analysis, save_dir=output_folder, fmt=save_format)
                     if fig is not None:
                         figures.append(fig)
+                        plt.close(fig)
                         print(f"  Created violin plot: {param}")
 
                 if plot_type in ("swarm", "both"):
                     fig = plot_swarm_by_condition(
-                        df, param, analysis, save_dir=output_folder)
+                        df, param, analysis, save_dir=output_folder, fmt=save_format)
                     if fig is not None:
                         figures.append(fig)
+                        plt.close(fig)
                         print(f"  Created swarm plot: {param}")
 
         print(f"\n{'=' * 50}")
@@ -541,7 +558,4 @@ def launch_and_run() -> List[plt.Figure]:
 if __name__ == "__main__":
     from qtpy.QtWidgets import QApplication
     _qapp = QApplication.instance() or QApplication([])
-    figs = launch_and_run()
-    if not figs:
-        sys.exit(0)
-    plt.show()
+    launch_and_run()

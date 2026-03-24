@@ -280,11 +280,18 @@ def segment_acinus(
     acinus_mask = np.where(labelled == keep, 1, 0).astype(np.int32)
     threshold_method = "li"
 
-    # --- Step 2: Per-slice 2D hole fill ---
+    # --- Step 2: Per-slice 2D hole fill + keep largest per slice ---
     # Handles cup/shell shapes that defeat 3D binary_fill_holes.
-    # Each slice is filled independently  fast and no risk of merging neighbours.
+    # Each slice is filled independently, then only the single largest
+    # component is kept to avoid capturing proximal acini.
     for z in range(acinus_mask.shape[0]):
-        acinus_mask[z] = ndi.binary_fill_holes(acinus_mask[z]).astype(np.int32)
+        filled = ndi.binary_fill_holes(acinus_mask[z]).astype(np.int32)
+        lbl = label(filled)
+        if lbl.max() > 1:
+            rps = regionprops_table(lbl, properties=("label", "area"))
+            keep_lbl = rps["label"][np.argmax(rps["area"])]
+            filled = np.where(lbl == keep_lbl, 1, 0).astype(np.int32)
+        acinus_mask[z] = filled
 
     # --- Step 3: Sphericity check  split merged acini if needed ---
     flag = "None"
@@ -307,9 +314,15 @@ def segment_acinus(
                 keep2 = props2["label"][np.argmax(props2["area"])]
                 acinus_mask = np.where(labelled2 == keep2, 1, 0).astype(np.int32)
                 acinus_mask = expand_labels(acinus_mask, distance=8)
-                # Re-fill per slice after the split
+                # Re-fill per slice after the split, keep largest only
                 for z in range(acinus_mask.shape[0]):
-                    acinus_mask[z] = ndi.binary_fill_holes(acinus_mask[z]).astype(np.int32)
+                    filled = ndi.binary_fill_holes(acinus_mask[z]).astype(np.int32)
+                    lbl = label(filled)
+                    if lbl.max() > 1:
+                        rps = regionprops_table(lbl, properties=("label", "area"))
+                        keep_lbl = rps["label"][np.argmax(rps["area"])]
+                        filled = np.where(lbl == keep_lbl, 1, 0).astype(np.int32)
+                    acinus_mask[z] = filled
 
     # --- Step 4: Final erosion to offset any expansion from smoothing/filling ---
     acinus_mask = erosion(acinus_mask > 0, ball(5)).astype(np.int32)
