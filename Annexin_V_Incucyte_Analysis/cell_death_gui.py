@@ -26,6 +26,7 @@ from cellpose import io, models
 from magicgui import magicgui
 from magicgui.widgets import TextEdit
 from matplotlib.collections import LineCollection
+from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 from qtpy.QtWidgets import (
     QApplication,
@@ -470,6 +471,87 @@ def compute_snapshot_percentages(snapshot_df, n_frames):
     return pd.DataFrame(data), cats
 
 
+# ---------------------------------------------------------------------------
+#  Colour inference from fluorophore names
+# ---------------------------------------------------------------------------
+
+# Mapping of common colour keywords to matplotlib colour strings and napari
+# colormaps.  Checked case-insensitively against fluorophore names.
+_COLOUR_KEYWORDS: Dict[str, dict] = {
+    "red":     {"mpl": "tab:red",    "napari": "red",     "rgb": (1.0, 0.0, 0.0)},
+    "green":   {"mpl": "tab:green",  "napari": "green",   "rgb": (0.0, 0.8, 0.0)},
+    "blue":    {"mpl": "tab:blue",   "napari": "blue",    "rgb": (0.2, 0.4, 1.0)},
+    "yellow":  {"mpl": "goldenrod",  "napari": "yellow",  "rgb": (0.9, 0.85, 0.0)},
+    "cyan":    {"mpl": "tab:cyan",   "napari": "cyan",    "rgb": (0.0, 0.8, 0.8)},
+    "magenta": {"mpl": "tab:pink",   "napari": "magenta", "rgb": (0.9, 0.0, 0.6)},
+}
+
+# Fallback sequence when the name doesn't match any colour keyword.
+_FALLBACK_MPL  = ["tab:red", "tab:green", "tab:blue", "tab:orange", "tab:purple"]
+_FALLBACK_NAP  = ["red", "green", "blue", "gray", "gray"]
+_FALLBACK_RGB  = [
+    (1.0, 0.0, 0.0), (0.0, 0.8, 0.0), (0.2, 0.4, 1.0),
+    (1.0, 0.5, 0.0), (0.5, 0.0, 0.8),
+]
+
+
+def _match_colour_keyword(name: str) -> Optional[str]:
+    """Return the matching colour keyword for *name*, or None."""
+    low = name.lower()
+    for kw in _COLOUR_KEYWORDS:
+        if kw in low:
+            return kw
+    return None
+
+
+def _infer_fluor_mpl(name: str, index: int = 0) -> str:
+    """Return a matplotlib colour for a fluorophore name."""
+    kw = _match_colour_keyword(name)
+    if kw:
+        return _COLOUR_KEYWORDS[kw]["mpl"]
+    return _FALLBACK_MPL[index % len(_FALLBACK_MPL)]
+
+
+def _infer_fluor_napari(name: str, index: int = 0) -> str:
+    """Return a napari colormap name for a fluorophore name."""
+    kw = _match_colour_keyword(name)
+    if kw:
+        return _COLOUR_KEYWORDS[kw]["napari"]
+    return _FALLBACK_NAP[index % len(_FALLBACK_NAP)]
+
+
+def _infer_fluor_rgb(name: str, index: int = 0):
+    """Return an (r, g, b) tuple for a fluorophore name."""
+    kw = _match_colour_keyword(name)
+    if kw:
+        return np.array(_COLOUR_KEYWORDS[kw]["rgb"])
+    return np.array(_FALLBACK_RGB[index % len(_FALLBACK_RGB)])
+
+
+# ---------------------------------------------------------------------------
+#  Positive-label cutoff filtering
+# ---------------------------------------------------------------------------
+
+def filter_positive_labels(pos_labels, lower_cutoff=1, upper_cutoff=None):
+    """Zero-out connected-component labels whose area is outside the cutoff.
+
+    Operates in-place (modifies the arrays) and returns the same dict.
+    Each label in each frame is checked individually.
+    """
+    for fn, stack in pos_labels.items():
+        for frame_idx in range(stack.shape[0]):
+            frame = stack[frame_idx]
+            for lid in np.unique(frame):
+                if lid == 0:
+                    continue
+                area = int(np.count_nonzero(frame == lid))
+                if area < int(lower_cutoff):
+                    frame[frame == lid] = 0
+                elif upper_cutoff is not None and area > int(upper_cutoff):
+                    frame[frame == lid] = 0
+    return pos_labels
+
+
 _FLUOR_COLORS = ["tab:red", "tab:green", "tab:blue"]
 
 
@@ -478,7 +560,7 @@ def plot_persistent_percentages(
 ):
     fig, ax = plt.subplots(figsize=(8, 4))
     for i, fn in enumerate(fluor_names):
-        c = _FLUOR_COLORS[i] if i < len(_FLUOR_COLORS) else f"C{i}"
+        c = _infer_fluor_mpl(fn, i)
         sns.lineplot(
             data=summary_df, x="frame", y=f"{fn}_pct",
             color=c, label=fn, ax=ax,
@@ -497,8 +579,9 @@ def plot_snapshot_percentages(
     summary_df, categories, title="Per-frame categories over time"
 ):
     fig, ax = plt.subplots(figsize=(8, 4))
-    pal = sns.color_palette("husl", len(categories))
-    for cat, c in zip(categories, pal):
+    cat_cmap = _build_category_colormap(categories)
+    for cat in categories:
+        c = cat_cmap.get(cat, (0.5, 0.5, 0.5))
         sns.lineplot(
             data=summary_df, x="frame", y=f"{cat}_pct",
             color=c, label=cat, ax=ax,
@@ -599,6 +682,112 @@ def plot_snapshot_trajectories(
     ]
     ax.legend(handles=handles, title="Snapshot category", loc="best")
     plt.tight_layout()
+    return fig, ax
+
+
+def _build_category_colormap(categories):
+    """Build a colour map for snapshot categories.
+
+    Single fluorophores are coloured by name inference (e.g. a name
+    containing 'red' gets red, 'green' gets green).  Combinations get
+    blended RGB values.  'negative' is always grey.
+    """
+    # Discover unique single-fluorophore names in the order they first appear
+    singles = []
+    for cat in categories:
+        if cat == "negative":
+            continue
+        for part in cat.split("+"):
+            if part not in singles:
+                singles.append(part)
+
+    # Map each single fluorophore to its inferred RGB
+    single_rgb = {
+        name: _infer_fluor_rgb(name, i)
+        for i, name in enumerate(singles)
+    }
+
+    cmap = {}
+    for cat in categories:
+        if cat == "negative":
+            cmap[cat] = (0.7, 0.7, 0.7)
+            continue
+        parts = cat.split("+")
+        rgb = np.zeros(3)
+        for p in parts:
+            rgb += single_rgb.get(p, np.array([0.5, 0.5, 0.5]))
+        rgb = np.clip(rgb, 0, 1)
+        cmap[cat] = tuple(rgb.tolist())
+    return cmap
+
+
+def plot_snapshot_cell_timelines(
+    snapshot_df,
+    title="Cell status over time",
+):
+    """Swimlane / timeline plot showing each cell's category at every frame.
+
+    Each row is one tracked cell; the x-axis is frame (time).  Segments are
+    coloured by the cell's snapshot category at that frame, producing a
+    visual timeline of transitions (e.g. red → red+green → green for FUCCI).
+
+    Returns (fig, ax).
+    """
+    if snapshot_df is None or len(snapshot_df) == 0:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "No snapshot data", ha="center", va="center",
+                transform=ax.transAxes)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig, ax
+
+    categories = sorted(snapshot_df["category"].unique())
+    color_map = _build_category_colormap(categories)
+
+    cell_ids = sorted(snapshot_df["label_id"].unique())
+    n_cells = len(cell_ids)
+    cell_y = {cid: i for i, cid in enumerate(cell_ids)}
+
+    # Determine frame range
+    min_frame = int(snapshot_df["frame"].min())
+    max_frame = int(snapshot_df["frame"].max())
+
+    height = max(3, min(n_cells * 0.25 + 1, 40))
+    fig, ax = plt.subplots(figsize=(max(8, (max_frame - min_frame) * 0.15 + 2), height))
+
+    # Draw one coloured rectangle per cell per frame
+    for _, row in snapshot_df.iterrows():
+        lid = row["label_id"]
+        frame = int(row["frame"])
+        cat = row["category"]
+        colour = color_map.get(cat, (0.5, 0.5, 0.5))
+        y = cell_y[lid]
+        ax.barh(y, width=1, left=frame, height=0.8, color=colour,
+                edgecolor="none", linewidth=0)
+
+    ax.set_xlim(min_frame - 0.5, max_frame + 1.5)
+    ax.set_ylim(-0.5, n_cells - 0.5)
+    ax.set_xlabel("Frame", fontsize=11)
+    ax.set_ylabel("Cell", fontsize=11)
+    ax.set_title(title, fontsize=12)
+
+    # Thin y-tick labels only when there are few cells
+    if n_cells <= 60:
+        ax.set_yticks(range(n_cells))
+        ax.set_yticklabels([str(c) for c in cell_ids], fontsize=max(4, 8 - n_cells // 20))
+    else:
+        ax.set_yticks([])
+
+    # Legend
+    handles = [
+        Patch(facecolor=color_map[c], edgecolor="none", label=c)
+        for c in categories
+    ]
+    ax.legend(handles=handles, title="Category", loc="upper right",
+              fontsize=8, title_fontsize=9, framealpha=0.8)
+
+    fig.tight_layout()
     return fig, ax
 
 
@@ -1111,6 +1300,9 @@ class CellDeathAnalysisApp:
         pos_masks = {fn: fl_out[fn]["positive"] for fn in fluor_names}
         pos_labels = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
 
+        # Remove positive labels whose area falls outside the pixel cutoffs
+        filter_positive_labels(pos_labels, positive_lower_cutoff, positive_upper_cutoff)
+
         self._set_progress(45, fmt=f"Assigning fates ({mode})...")
         self._append_log(f"Assigning fates (mode={mode})...")
         locked_labels = None
@@ -1260,6 +1452,15 @@ class CellDeathAnalysisApp:
                 traj_pdf = work_dir / f"snapshot_trajectories_{cutoff}pct.pdf"
                 fig_traj.savefig(str(traj_pdf), bbox_inches="tight")
                 plt.close(fig_traj)
+
+                # Timeline: one row per cell, coloured by category at each frame
+                fig_tl, _ = plot_snapshot_cell_timelines(
+                    fs,
+                    title=f"{stem} — cell timelines ≥{cutoff}% frames (n={n_cells} cells)",
+                )
+                tl_pdf = work_dir / f"snapshot_timelines_{cutoff}pct.pdf"
+                fig_tl.savefig(str(tl_pdf), bbox_inches="tight")
+                plt.close(fig_tl)
         summary_df.to_csv(summary_csv, index=False)
         fig.savefig(str(plot_pdf), bbox_inches="tight")
         plt.close(fig)
@@ -1555,6 +1756,9 @@ class CellDeathAnalysisApp:
         pos_masks = {fn: fl_out[fn]["positive"] for fn in fluor_names}
         pos_labels = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
 
+        # Remove positive labels whose area falls outside the pixel cutoffs
+        filter_positive_labels(pos_labels, positive_lower_cutoff, positive_upper_cutoff)
+
         # 5. Fate assignment
         self._set_progress(90, fmt="Assigning fates...")
         self._append_log(f"Assigning fates (mode={mode})...")
@@ -1669,7 +1873,7 @@ class CellDeathAnalysisApp:
         )
 
         for i, (fn, img) in enumerate(data["fluor_images"].items()):
-            cmap = _VIEWER_CMAPS[i] if i < len(_VIEWER_CMAPS) else "gray"
+            cmap = _infer_fluor_napari(fn, i)
             self.viewer.add_image(
                 img, name=f"{fn} fluorescence",
                 colormap=cmap, blending="additive",
