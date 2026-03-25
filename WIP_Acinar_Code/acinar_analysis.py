@@ -57,6 +57,7 @@ import pathlib
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
 import joblib
 import numpy as np
 import pandas as pd
@@ -94,6 +95,7 @@ VALID_ANALYSES = {
     "protein_proximity",
     "proliferation",
     "mitochondria",
+    "membrane_upregulation",
 }
 
 _UNSET = object()  # sentinel for "use instance default"
@@ -157,12 +159,51 @@ def read_pixel_size(tif_path: str) -> List[float]:
     return [x, y, z]
 
 
-def add_image_details(df: pd.DataFrame, filename: str, flag: str) -> pd.DataFrame:
+def _load_imaging_record(path: Optional[str] = None) -> Optional[dict]:
+    """Load an imaging_record YAML file.  Returns None if path is None or missing."""
+    if path is None:
+        return None
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return None
+    with open(p, "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def _apply_yaml_rules(filename: str, record: dict) -> dict:
+    """Match filename against the rules in an imaging_record dict.
+
+    Returns a flat dict of column-name → value (e.g. ``{"well": 1, "day": 3, …}``).
+    """
+    fn = filename.lower().replace("_", "")
+    result: Dict[str, Any] = {}
+    for field, spec in record.items():
+        if not isinstance(spec, dict) or "rules" not in spec:
+            continue
+        default = spec.get("default")
+        matched = False
+        for rule in spec["rules"]:
+            if rule["pattern"] in fn:
+                result[field] = rule["value"]
+                matched = True
+                break
+        if not matched:
+            result[field] = default if default is not None else np.nan
+    return result
+
+
+def add_image_details(
+    df: pd.DataFrame,
+    filename: str,
+    flag: str,
+    imaging_record: Optional[dict] = None,
+) -> pd.DataFrame:
     """
     Add experimental details extracted from the filename to a DataFrame.
 
-    Parses the filename to infer experimental details such as well number,
-    imaging day, mechanical stiffness condition, and treatment type.
+    If *imaging_record* (a parsed YAML dict) is supplied the metadata rules
+    come from there.  Otherwise the original hard-coded rules are used as
+    a fallback so that existing scripts still work unchanged.
 
     Parameters
     ----------
@@ -172,63 +213,73 @@ def add_image_details(df: pd.DataFrame, filename: str, flag: str) -> pd.DataFram
         The filename of the image (used to extract experimental details).
     flag : str
         A flag indicating any segmentation issues detected during processing.
+    imaging_record : dict or None
+        Parsed contents of an ``imaging_record.yml`` file.  When provided,
+        the hard-coded rules are skipped entirely.
 
     Returns
     -------
     pd.DataFrame
         The updated DataFrame with added metadata columns.
     """
-    fn = filename.lower().replace("_", "")
     df["filename"] = filename
     df["flag"] = flag
 
-    # Well number
-    if "well1" in fn:
-        df["well"] = 1
-    elif "well2" in fn:
-        df["well"] = 2
+    if imaging_record is not None:
+        meta = _apply_yaml_rules(filename, imaging_record)
+        for col, val in meta.items():
+            df[col] = val
     else:
-        df["well"] = np.nan
+        # Legacy hard-coded rules (kept for backward compatibility)
+        fn = filename.lower().replace("_", "")
 
-    # Day
-    if "_d0" in filename.lower() or "d0" in fn:
-        df["day"] = 0
-    elif "d1" in fn:
-        df["day"] = 1
-    elif "_d3" in filename.lower() or "d3" in fn:
-        df["day"] = 3
-    else:
-        df["day"] = 7
+        # Well number
+        if "well1" in fn:
+            df["well"] = 1
+        elif "well2" in fn:
+            df["well"] = 2
+        else:
+            df["well"] = np.nan
 
-    # Cell type
-    if "wt" in fn:
-        df["cell_type"] = "WT"
-    elif "bad" in fn:
-        df["cell_type"] = "BADER"
-    else:
-        df["cell_type"] = "unknown"
+        # Day
+        if "_d0" in filename.lower() or "d0" in fn:
+            df["day"] = 0
+        elif "d1" in fn:
+            df["day"] = 1
+        elif "_d3" in filename.lower() or "d3" in fn:
+            df["day"] = 3
+        else:
+            df["day"] = 7
 
-    # Stiffness
-    if "soft" in fn:
-        df["condition"] = "soft"
-    elif "stiff" in fn:
-        df["condition"] = "stiff"
-    else:
-        df["condition"] = "blank"
+        # Cell type
+        if "wt" in fn:
+            df["cell_type"] = "WT"
+        elif "bad" in fn:
+            df["cell_type"] = "BADER"
+        else:
+            df["cell_type"] = "unknown"
 
-    # Treatment
-    if "bleb" in fn:
-        df["treatment"] = "blebbistatin"
-    elif "4oht" in fn:
-        df["treatment"] = "4OHT"
-    elif "rock" in fn or "y27632" in fn:
-        df["treatment"] = "ROCKi"
-    elif "batimastat" in fn or "mmpi" in fn:
-        df["treatment"] = "batimastat"
-    elif "abt" in fn:
-        df["treatment"] = "ABT737"
-    else:
-        df["treatment"] = "untreated"
+        # Stiffness
+        if "soft" in fn:
+            df["condition"] = "soft"
+        elif "stiff" in fn:
+            df["condition"] = "stiff"
+        else:
+            df["condition"] = "blank"
+
+        # Treatment
+        if "bleb" in fn:
+            df["treatment"] = "blebbistatin"
+        elif "4oht" in fn:
+            df["treatment"] = "4OHT"
+        elif "rock" in fn or "y27632" in fn:
+            df["treatment"] = "ROCKi"
+        elif "batimastat" in fn or "mmpi" in fn:
+            df["treatment"] = "batimastat"
+        elif "abt" in fn:
+            df["treatment"] = "ABT737"
+        else:
+            df["treatment"] = "untreated"
 
     df["image_type"] = df["condition"].astype(str) + ", d" + df["day"].astype(str)
     return df
@@ -577,6 +628,7 @@ class AcinarImage:
         self.qc_dir = None  # set externally or via batch_analyse
         self.return_volumes = False  # when True, populate self.volumes
         self.volumes: Dict[str, np.ndarray] = {}  # name -> 3D array
+        self.imaging_record: Optional[dict] = None  # set externally or via batch_analyse
 
         # Mask paths
         self.nuclear_mask_path = nuclear_mask_path
@@ -1401,6 +1453,96 @@ class AcinarImage:
 
         return result
 
+    def membrane_upregulation(self, shell_width_um=3.0, inner_shell_offset_um=5.0):
+        """Quantify membrane intensity in an outer edge shell vs an inner shell.
+
+        Computes the median membrane-channel intensity in a thin shell at the
+        acinus periphery and compares it with a shell deeper inside the acinus.
+        The ratio (edge / inner) indicates whether membrane signal is enriched
+        at the acinus boundary.
+
+        Parameters
+        ----------
+        shell_width_um : float
+            Width of both shells in micrometres (default: 3).
+        inner_shell_offset_um : float
+            Gap between the outer edge of the edge shell and the start of the
+            inner shell, in micrometres (default: 5).
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per acinus with edge/inner intensity metrics.
+        """
+        if self.membrane_channel is None:
+            raise ValueError(
+                "membrane_upregulation requires 'membrane_channel' to be set."
+            )
+
+        acinus_mask, px, flag, _thresh, _sol = self._get_acinus_mask()
+
+        membrane_rescaled = self._rescale_volume(
+            self.image[:, self.membrane_channel, :, :]
+        )
+
+        # Acinus-level measurements
+        acinus_regions = regionprops(acinus_mask)
+        if not acinus_regions:
+            return pd.DataFrame({
+                "acinus_volume_um3": [np.nan],
+                "acinus_roundness": [np.nan],
+                "flag": ["no_acinus"],
+            })
+
+        r = acinus_regions[0]
+        acinus_vol = r.area * px ** 3
+        acinus_roundness = r.inertia_tensor_eigvals[2] / r.inertia_tensor_eigvals[0]
+
+        # Distance transform from the acinus boundary inward
+        distance = ndi.distance_transform_edt(acinus_mask > 0)
+
+        shell_width_px = shell_width_um / px
+        inner_shell_start_px = shell_width_px + (inner_shell_offset_um / px)
+        inner_shell_end_px = inner_shell_start_px + shell_width_px
+
+        acinus_bool = acinus_mask > 0
+        edge_shell = acinus_bool & (distance > 0) & (distance <= shell_width_px)
+        inner_shell = acinus_bool & (distance > inner_shell_start_px) & (distance <= inner_shell_end_px)
+
+        edge_median = float(np.median(membrane_rescaled[edge_shell])) if edge_shell.any() else np.nan
+        inner_median = float(np.median(membrane_rescaled[inner_shell])) if inner_shell.any() else np.nan
+
+        if not np.isnan(inner_median) and inner_median > 0:
+            ratio = edge_median / inner_median
+        else:
+            ratio = np.nan
+
+        df = pd.DataFrame([{
+            "acinus_volume_um3": acinus_vol,
+            "acinus_roundness": acinus_roundness,
+            "membrane_edge_shell_median": edge_median,
+            "membrane_inner_shell_median": inner_median,
+            "membrane_edge_to_inner_ratio": ratio,
+            "edge_shell_volume_um3": float(edge_shell.sum()) * px ** 3,
+            "inner_shell_volume_um3": float(inner_shell.sum()) * px ** 3,
+            "flag": flag,
+        }])
+
+        # QC plot
+        self._save_qc("membrane_upregulation", [
+            (self._mid_z(acinus_mask), "Acinus mask"),
+            (self._mid_z(edge_shell.astype(np.uint8)), "Edge shell"),
+            (self._mid_z(inner_shell.astype(np.uint8)), "Inner shell"),
+        ], title_extra=f"ratio={ratio:.2f}" if not np.isnan(ratio) else "ratio=NaN",
+           red_channel=self.membrane_channel)
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["edge_shell"] = edge_shell
+            self.volumes["inner_shell"] = inner_shell
+
+        return df
+
     # =====================================================================
     #  Run multiple analyses at once
     # =====================================================================
@@ -1434,7 +1576,8 @@ class AcinarImage:
                 df = method(**filtered)
                 # Add filename and parsed experimental metadata
                 flag = df["flag"].iloc[0] if "flag" in df.columns and len(df) > 0 else "None"
-                df = add_image_details(df, self.filename, flag)
+                df = add_image_details(df, self.filename, flag,
+                                       imaging_record=self.imaging_record)
                 results[name] = df
             except Exception as e:
                 err_df = pd.DataFrame(
@@ -1469,6 +1612,7 @@ def batch_analyse(
     edu_mask_dir: Optional[str] = None,
     mito_mask_dir: Optional[str] = None,
     qc_dir: Optional[str] = None,
+    imaging_record_path: Optional[str] = None,
     progress_callback=None,
     **kwargs,
 ) -> Dict[str, pd.DataFrame]:
@@ -1478,8 +1622,17 @@ def batch_analyse(
     Mask directories, if provided, must contain one mask TIFF per image TIFF
     (matched alphabetically).
 
+    Parameters
+    ----------
+    imaging_record_path : str or None
+        Path to an ``imaging_record.yml`` file that defines how experimental
+        metadata is extracted from filenames.  When ``None`` the hard-coded
+        parsing rules are used instead.
+
     Returns a dict mapping analysis name -> concatenated DataFrame for all images.
     """
+    imaging_record = _load_imaging_record(imaging_record_path)
+
     image_paths = sorted(pathlib.Path(image_dir).rglob(f"*.{file_extension}"))
     if not image_paths:
         raise FileNotFoundError(f"No .{file_extension} files found in {image_dir}")
@@ -1517,6 +1670,7 @@ def batch_analyse(
             **ctor_kwargs,
         )
         img.qc_dir = qc_dir
+        img.imaging_record = imaging_record
         return img.run(analyses, **analysis_kwargs)
 
     print(f"Found {len(image_paths)} images. Running analyses: {analyses}")
@@ -1595,6 +1749,8 @@ Examples:
     parser.add_argument("--search-radius-um", type=float, default=5.0)
     parser.add_argument("--n-jobs", type=int, default=3)
     parser.add_argument("--output", default="acinar_results.csv", help="Output CSV path")
+    parser.add_argument("--imaging-record", default=None,
+                        help="Path to imaging_record.yml for metadata extraction")
 
     args = parser.parse_args()
 
@@ -1617,6 +1773,7 @@ Examples:
         mito_channel=args.mito_channel,
         proximity_protein_channel=args.proximity_protein_channel,
         search_radius_um=args.search_radius_um,
+        imaging_record_path=args.imaging_record,
     )
 
 
