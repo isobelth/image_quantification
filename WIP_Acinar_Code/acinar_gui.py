@@ -141,6 +141,13 @@ class AcinarAnalysisGUI:
             call_button=False,
         )
 
+        self.override_panel = magicgui(
+            self._override_stub,
+            cell_type={"label": "Cell Type (blank = infer from filename)", "value": ""},
+            treatment={"label": "Treatment (blank = infer from filename)", "value": ""},
+            call_button=False,
+        )
+
         self.analysis_panel = magicgui(
             self._analysis_stub,
             acinus_shape={"label": "Acinus Shape", "value": False},
@@ -180,6 +187,8 @@ class AcinarAnalysisGUI:
                 self.folder_panel,
                 Label(value="── Channel Config ──"),
                 self.channel_panel,
+                Label(value="── Metadata Overrides (optional) ──"),
+                self.override_panel,
                 Label(value="── Analyses ──"),
                 self.analysis_panel,
                 Label(value="── Run ──"),
@@ -246,6 +255,13 @@ class AcinarAnalysisGUI:
         proximity_protein_channel: int = -1,
         file_extension: str = "tif",
         n_jobs: int = 3,
+    ):
+        return None
+
+    @staticmethod
+    def _override_stub(
+        cell_type: str = "",
+        treatment: str = "",
     ):
         return None
 
@@ -369,6 +385,10 @@ class AcinarAnalysisGUI:
         output_csv = str(Path(output_dir) / "acinar_results.csv")
         qc_dir = str(Path(output_dir) / "qc_plots") if self.analysis_panel.save_qc_plots.value else None
 
+        # Read metadata overrides (empty string → None → infer from filename)
+        cell_type_override = str(self.override_panel.cell_type.value).strip() or None
+        treatment_override = str(self.override_panel.treatment.value).strip() or None
+
         self._config = {
             "image_dir": folders["image_dir"],
             "analyses": analyses,
@@ -388,6 +408,8 @@ class AcinarAnalysisGUI:
             "mito_channel": channels.get("mito_channel"),
             "proximity_protein_channel": channels.get("proximity_protein_channel"),
             "qc_dir": qc_dir,
+            "cell_type_override": cell_type_override,
+            "treatment_override": treatment_override,
         }
 
         self._log("=" * 50)

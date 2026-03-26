@@ -197,6 +197,8 @@ def add_image_details(
     filename: str,
     flag: str,
     imaging_record: Optional[dict] = None,
+    cell_type_override: Optional[str] = None,
+    treatment_override: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Add experimental details extracted from the filename to a DataFrame.
@@ -276,6 +278,12 @@ def add_image_details(
         df["treatment"] = "ABT737"
     else:
         df["treatment"] = "untreated"
+
+    # Apply user overrides (if provided, they replace inferred values)
+    if cell_type_override:
+        df["cell_type"] = cell_type_override
+    if treatment_override:
+        df["treatment"] = treatment_override
 
     df["image_type"] = df["condition"].astype(str) + ", d" + df["day"].astype(str)
     return df
@@ -1572,8 +1580,12 @@ class AcinarImage:
                 df = method(**filtered)
                 # Add filename and parsed experimental metadata
                 flag = df["flag"].iloc[0] if "flag" in df.columns and len(df) > 0 else "None"
-                df = add_image_details(df, self.filename, flag,
-                                       imaging_record=self.imaging_record)
+                df = add_image_details(
+                    df, self.filename, flag,
+                    imaging_record=self.imaging_record,
+                    cell_type_override=getattr(self, 'cell_type_override', None),
+                    treatment_override=getattr(self, 'treatment_override', None),
+                )
                 results[name] = df
             except Exception as e:
                 err_df = pd.DataFrame(
@@ -1609,6 +1621,8 @@ def batch_analyse(
     mito_mask_dir: Optional[str] = None,
     qc_dir: Optional[str] = None,
     imaging_record_path: Optional[str] = None,
+    cell_type_override: Optional[str] = None,
+    treatment_override: Optional[str] = None,
     progress_callback=None,
     **kwargs,
 ) -> Dict[str, pd.DataFrame]:
@@ -1667,6 +1681,8 @@ def batch_analyse(
         )
         img.qc_dir = qc_dir
         img.imaging_record = imaging_record
+        img.cell_type_override = cell_type_override
+        img.treatment_override = treatment_override
         return img.run(analyses, **analysis_kwargs)
 
     print(f"Found {len(image_paths)} images. Running analyses: {analyses}")
