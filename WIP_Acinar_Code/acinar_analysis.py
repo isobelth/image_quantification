@@ -225,61 +225,57 @@ def add_image_details(
     df["filename"] = filename
     df["flag"] = flag
 
-    if imaging_record is not None:
-        meta = _apply_yaml_rules(filename, imaging_record)
-        for col, val in meta.items():
-            df[col] = val
+
+    # Legacy hard-coded rules (kept for backward compatibility)
+    fn = filename.lower().replace("_", "")
+
+    # Well number
+    if "well1" in fn:
+        df["well"] = 1
+    elif "well2" in fn:
+        df["well"] = 2
     else:
-        # Legacy hard-coded rules (kept for backward compatibility)
-        fn = filename.lower().replace("_", "")
+        df["well"] = np.nan
 
-        # Well number
-        if "well1" in fn:
-            df["well"] = 1
-        elif "well2" in fn:
-            df["well"] = 2
-        else:
-            df["well"] = np.nan
+    # Day
+    if "_d0" in filename.lower() or "d0" in fn:
+        df["day"] = 0
+    elif "d1" in fn:
+        df["day"] = 1
+    elif "_d3" in filename.lower() or "d3" in fn:
+        df["day"] = 3
+    else:
+        df["day"] = 7
 
-        # Day
-        if "_d0" in filename.lower() or "d0" in fn:
-            df["day"] = 0
-        elif "d1" in fn:
-            df["day"] = 1
-        elif "_d3" in filename.lower() or "d3" in fn:
-            df["day"] = 3
-        else:
-            df["day"] = 7
+    # Cell type
+    if "wt" in fn:
+        df["cell_type"] = "WT"
+    elif "bad" in fn:
+        df["cell_type"] = "BADER"
+    else:
+        df["cell_type"] = "WT"
 
-        # Cell type
-        if "wt" in fn:
-            df["cell_type"] = "WT"
-        elif "bad" in fn:
-            df["cell_type"] = "BADER"
-        else:
-            df["cell_type"] = "unknown"
+    # Stiffness
+    if "soft" in fn:
+        df["condition"] = "soft"
+    elif "stiff" in fn:
+        df["condition"] = "stiff"
+    else:
+        df["condition"] = "blank"
 
-        # Stiffness
-        if "soft" in fn:
-            df["condition"] = "soft"
-        elif "stiff" in fn:
-            df["condition"] = "stiff"
-        else:
-            df["condition"] = "blank"
-
-        # Treatment
-        if "bleb" in fn:
-            df["treatment"] = "blebbistatin"
-        elif "4oht" in fn:
-            df["treatment"] = "4OHT"
-        elif "rock" in fn or "y27632" in fn:
-            df["treatment"] = "ROCKi"
-        elif "batimastat" in fn or "mmpi" in fn:
-            df["treatment"] = "batimastat"
-        elif "abt" in fn:
-            df["treatment"] = "ABT737"
-        else:
-            df["treatment"] = "untreated"
+    # Treatment
+    if "bleb" in fn:
+        df["treatment"] = "blebbistatin"
+    elif "4oht" in fn:
+        df["treatment"] = "4OHT"
+    elif "rock" in fn or "y27632" in fn:
+        df["treatment"] = "ROCKi"
+    elif "batimastat" in fn or "mmpi" in fn:
+        df["treatment"] = "batimastat"
+    elif "abt" in fn:
+        df["treatment"] = "ABT737"
+    else:
+        df["treatment"] = "untreated"
 
     df["image_type"] = df["condition"].astype(str) + ", d" + df["day"].astype(str)
     return df
