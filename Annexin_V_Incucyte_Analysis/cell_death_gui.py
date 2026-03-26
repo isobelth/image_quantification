@@ -318,6 +318,7 @@ def generate_trackmate_labels(
     search_radius=150.0,
     max_frame_gap=3,
     allow_track_splitting=False,
+    splitting_max_distance=15.0,
     allow_track_merging=False,
     ij=None,
 ):
@@ -369,6 +370,7 @@ def generate_trackmate_labels(
     ts.put("LINKING_MAX_DISTANCE", Double.valueOf(float(initial_search_radius)))
     ts.put("MAX_FRAME_GAP", Integer.valueOf(int(max_frame_gap)))
     ts.put("ALLOW_TRACK_SPLITTING", allow_track_splitting)
+    ts.put("SPLITTING_MAX_DISTANCE", Double.valueOf(float(splitting_max_distance)))
     ts.put("ALLOW_TRACK_MERGING", allow_track_merging)
     fp = HashMap()
     for k in ("POSITION_X", "POSITION_Y", "AREA"):
@@ -1090,6 +1092,7 @@ class CellDeathAnalysisApp:
         search_radius: float = 150.0,
         max_frame_gap: int = 3,
         allow_splitting: bool = False,
+        splitting_max_distance: float = 15.0,
         allow_merging: bool = False,
     ):
         pass
@@ -1232,6 +1235,12 @@ class CellDeathAnalysisApp:
             },
             max_frame_gap={"label": "Max frame gap", "min": 0, "max": 50},
             allow_splitting={"label": "Allow splitting"},
+            splitting_max_distance={
+                "label": "Splitting max distance",
+                "min": 1.0,
+                "max": 2000.0,
+                "step": 5.0,
+            },
             allow_merging={"label": "Allow merging"},
             call_button=False,
         )
@@ -1462,6 +1471,7 @@ class CellDeathAnalysisApp:
         tm_search = float(self.trackmate_panel.search_radius.value)
         tm_gap = int(self.trackmate_panel.max_frame_gap.value)
         tm_split = bool(self.trackmate_panel.allow_splitting.value)
+        tm_split_dist = float(self.trackmate_panel.splitting_max_distance.value)
         tm_merge = bool(self.trackmate_panel.allow_merging.value)
 
         masks_path = work_dir / "masks_stack.tiff"
@@ -1479,6 +1489,7 @@ class CellDeathAnalysisApp:
             search_radius=tm_search,
             max_frame_gap=tm_gap,
             allow_track_splitting=tm_split,
+            splitting_max_distance=tm_split_dist,
             allow_track_merging=tm_merge,
             ij=self._ij,
         )
@@ -1933,6 +1944,7 @@ class CellDeathAnalysisApp:
         tm_search = float(self.trackmate_panel.search_radius.value)
         tm_gap = int(self.trackmate_panel.max_frame_gap.value)
         tm_split = bool(self.trackmate_panel.allow_splitting.value)
+        tm_split_dist = float(self.trackmate_panel.splitting_max_distance.value)
         tm_merge = bool(self.trackmate_panel.allow_merging.value)
 
         # 1. Load image  (expect 4-D: T, C, Y, X)
@@ -1993,6 +2005,7 @@ class CellDeathAnalysisApp:
             search_radius=tm_search,
             max_frame_gap=tm_gap,
             allow_track_splitting=tm_split,
+            splitting_max_distance=tm_split_dist,
             allow_track_merging=tm_merge,
             ij=self._ij,
         )
