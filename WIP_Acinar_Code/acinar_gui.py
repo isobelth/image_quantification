@@ -70,6 +70,11 @@ _REQUIREMENTS: Dict[str, dict] = {
         "channels": [],
         "label": "Mitochondria",
     },
+    "membrane_upregulation": {
+        "folders": [],
+        "channels": ["membrane_channel"],
+        "label": "Membrane Upregulation",
+    },
 }
 
 _FOLDER_LABELS = {
@@ -85,6 +90,7 @@ _CHANNEL_LABELS = {
     "c3_channel": "C3 Channel",
     "edu_channel": "EdU Channel",
     "proximity_protein_channel": "Proximity Protein Channel",
+    "membrane_channel": "Membrane Channel",
 }
 
 
@@ -116,6 +122,8 @@ class AcinarAnalysisGUI:
             edu_mask_dir={"label": "EdU Mask Folder", "mode": "d"},
             mito_mask_dir={"label": "Mito Mask Folder", "mode": "d"},
             output_dir={"label": "Output Directory", "mode": "d"},
+            imaging_record={"label": "Imaging Record (.yml)", "mode": "r",
+                            "filter": "*.yml *.yaml"},
             call_button=False,
         )
 
@@ -142,6 +150,7 @@ class AcinarAnalysisGUI:
             protein_proximity={"label": "Protein Proximity", "value": False},
             proliferation={"label": "Proliferation (EdU)", "value": False},
             mitochondria={"label": "Mitochondria", "value": False},
+            membrane_upregulation={"label": "Membrane Upregulation", "value": False},
             save_qc_plots={"label": "Save QC Plots", "value": True},
             call_button=False,
         )
@@ -208,6 +217,7 @@ class AcinarAnalysisGUI:
         edu_mask_dir: Path = Path(),
         mito_mask_dir: Path = Path(),
         output_dir: Path = Path(),
+        imaging_record: Path = Path(),
     ):
         return None
 
@@ -220,6 +230,7 @@ class AcinarAnalysisGUI:
         protein_proximity: bool = False,
         proliferation: bool = False,
         mitochondria: bool = False,
+        membrane_upregulation: bool = False,
         save_qc_plots: bool = True,
     ):
         return None
@@ -250,6 +261,13 @@ class AcinarAnalysisGUI:
     def _dir_or_none(path_value) -> Optional[str]:
         p = Path(str(path_value))
         if str(p) in (".", "") or not p.is_dir():
+            return None
+        return str(p)
+
+    @staticmethod
+    def _file_or_none(path_value) -> Optional[str]:
+        p = Path(str(path_value))
+        if str(p) in (".", "") or not p.is_file():
             return None
         return str(p)
 

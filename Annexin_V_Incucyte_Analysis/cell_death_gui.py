@@ -26,6 +26,7 @@ from cellpose import io, models
 from magicgui import magicgui
 from magicgui.widgets import TextEdit
 from matplotlib.collections import LineCollection
+from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 from qtpy.QtWidgets import (
     QApplication,
@@ -85,6 +86,120 @@ def _configure_java_home():
 # ---------------------------------------------------------------------------
 #  Processing functions
 # ---------------------------------------------------------------------------
+
+
+def _build_lineage(spot_rows, edges):
+    """Build a lineage tree from spot rows and edge pairs.
+
+    Detects division events (one source spot → 2+ target spots) and assigns
+    hierarchical ``lineage_id`` strings such as ``"1"``, ``"1.1"``,
+    ``"1.2"``, ``"1.1.1"``, etc.
+
+    Parameters
+    ----------
+    spot_rows : list[dict]
+        Each dict has at least ``spot_id``, ``track_id``, ``t``.
+    edges : list[tuple[int, int]]
+        ``(source_spot_id, target_spot_id)`` pairs from TrackMate, already
+        ordered so the source frame ≤ target frame.
+
+    Returns
+    -------
+    pd.DataFrame
+        The input rows extended with ``lineage_id``, ``parent_track_id``,
+        and ``generation`` columns.
+    """
+    df = pd.DataFrame(spot_rows)
+    if len(df) == 0:
+        df["lineage_id"] = pd.Series(dtype=str)
+        df["parent_track_id"] = pd.Series(dtype="Int64")
+        df["generation"] = pd.Series(dtype=int)
+        return df
+
+    # Map spot_id → track_id
+    spot_to_track = dict(zip(df["spot_id"], df["track_id"]))
+
+    # Detect which source spots have ≥ 2 outgoing edges (division)
+    from collections import defaultdict
+    children_of_spot = defaultdict(list)  # source_spot_id → [target_spot_id, ...]
+    for src, tgt in edges:
+        children_of_spot[src].append(tgt)
+
+    # Build track-level parent → children mapping
+    # A division: source_spot in track A connects to spots in track B, C, ...
+    # (different track_ids in the targets mean new daughter tracks)
+    parent_track = {}   # child_track_id → parent_track_id
+    division_idx = {}   # child_track_id → sibling index (1-based)
+    for src_spot, tgt_spots in children_of_spot.items():
+        if len(tgt_spots) < 2:
+            continue
+        src_tid = spot_to_track[src_spot]
+        # Collect distinct daughter track_ids (different from source)
+        daughter_tids = []
+        for ts in tgt_spots:
+            tgt_tid = spot_to_track[ts]
+            if tgt_tid != src_tid and tgt_tid not in daughter_tids:
+                daughter_tids.append(tgt_tid)
+        # If all targets are in the same track, no real split
+        if len(daughter_tids) == 0:
+            continue
+        # Assign: all daughters (and possibly the continuation in src_tid)
+        # get the source as parent.  If one target stays in src_tid, that
+        # continuation also becomes a "daughter" for lineage purposes.
+        all_children = daughter_tids[:]
+        # Check if the source track itself continues (has any target in same track)
+        continues_in_src = any(
+            spot_to_track[ts] == src_tid for ts in tgt_spots
+        )
+        if continues_in_src:
+            # The continuing track also gets marked as a daughter
+            if src_tid not in all_children:
+                all_children.insert(0, src_tid)
+        for idx, ctid in enumerate(sorted(all_children)):
+            if ctid not in parent_track:
+                parent_track[ctid] = src_tid
+                division_idx[ctid] = idx + 1
+
+    # Build hierarchical lineage IDs
+    # First, find root tracks (tracks with no parent)
+    all_tids = sorted(df["track_id"].unique())
+    root_tids = [t for t in all_tids if t not in parent_track]
+
+    # Assign base lineage IDs to roots (1-based sequential)
+    lineage_map = {}  # track_id → lineage_id string
+    for i, tid in enumerate(root_tids, start=1):
+        lineage_map[tid] = str(i)
+
+    # BFS to assign children
+    queue = list(root_tids)
+    visited = set(root_tids)
+    while queue:
+        tid = queue.pop(0)
+        # Find children of this track
+        children = [c for c, p in parent_track.items() if p == tid]
+        for ctid in sorted(children):
+            if ctid in visited:
+                continue
+            parent_lid = lineage_map.get(tid, "?")
+            sibling = division_idx.get(ctid, 1)
+            lineage_map[ctid] = f"{parent_lid}.{sibling}"
+            visited.add(ctid)
+            queue.append(ctid)
+
+    # Any tracks still not assigned (should not happen, but safety)
+    for tid in all_tids:
+        if tid not in lineage_map:
+            lineage_map[tid] = str(tid)
+
+    # Compute generation depth (number of dots in lineage_id)
+    df["lineage_id"] = df["track_id"].map(lineage_map)
+    df["parent_track_id"] = df["track_id"].map(
+        lambda t: parent_track.get(t, pd.NA)
+    )
+    df["generation"] = df["lineage_id"].str.count(r"\\.").astype(int)
+
+    return df
+
 
 def cellpose_live_segmentation(
     stack,
@@ -149,7 +264,11 @@ def cellpose_live_segmentation(
 
 
 def segment_fluorescence(stacks, blur_sigma=1.0, threshold_method="mean"):
-    """Blur, threshold, and label fluorescence stacks (1-3 fluorophores)."""
+    """Blur, threshold, and label fluorescence stacks (1-3 fluorophores).
+
+    *threshold_method* can be a single string (applied to all channels)
+    or a ``dict`` mapping channel name to its own threshold method.
+    """
     threshold_functions = {
         "mean": threshold_mean,
         "minimum": threshold_minimum,
@@ -157,14 +276,21 @@ def segment_fluorescence(stacks, blur_sigma=1.0, threshold_method="mean"):
         "otsu": threshold_otsu,
         "triangle": threshold_triangle,
     }
-    threshold_method = str(threshold_method).lower()
-    if threshold_method not in threshold_functions:
-        raise ValueError(f"Unsupported threshold: {threshold_method}")
 
-    fn = threshold_functions[threshold_method]
-    result = {"threshold_method": threshold_method, "blur_sigma": blur_sigma}
+    # Normalise to a dict keyed by channel name
+    if isinstance(threshold_method, str):
+        _thresh_map = {name: threshold_method.lower() for name in stacks}
+    else:
+        _thresh_map = {name: str(threshold_method.get(name, "mean")).lower()
+                       for name in stacks}
+
+    result = {"threshold_methods": _thresh_map, "blur_sigma": blur_sigma}
 
     for name, stack in stacks.items():
+        tm_name = _thresh_map[name]
+        if tm_name not in threshold_functions:
+            raise ValueError(f"Unsupported threshold for '{name}': {tm_name}")
+        fn = threshold_functions[tm_name]
         blurred = np.stack(
             [gaussian(f, sigma=blur_sigma, preserve_range=True) for f in stack],
             axis=0,
@@ -192,6 +318,7 @@ def generate_trackmate_labels(
     search_radius=150.0,
     max_frame_gap=3,
     allow_track_splitting=False,
+    splitting_max_distance=15.0,
     allow_track_merging=False,
     ij=None,
 ):
@@ -243,6 +370,7 @@ def generate_trackmate_labels(
     ts.put("LINKING_MAX_DISTANCE", Double.valueOf(float(initial_search_radius)))
     ts.put("MAX_FRAME_GAP", Integer.valueOf(int(max_frame_gap)))
     ts.put("ALLOW_TRACK_SPLITTING", allow_track_splitting)
+    ts.put("SPLITTING_MAX_DISTANCE", Double.valueOf(float(splitting_max_distance)))
     ts.put("ALLOW_TRACK_MERGING", allow_track_merging)
     fp = HashMap()
     for k in ("POSITION_X", "POSITION_Y", "AREA"):
@@ -259,25 +387,70 @@ def generate_trackmate_labels(
         raise RuntimeError(f"TrackMate process: {trackmate.getErrorMessage()}")
 
     tm = mdl.getTrackModel()
+
+    # ------------------------------------------------------------------
+    # Extract spots with a unique spot_id per spot
+    # ------------------------------------------------------------------
+    spot_info = {}  # java_spot_id -> dict
     rows = []
     for tid in tm.trackIDs(True):
         for s in sorted(
             tm.trackSpots(tid), key=lambda s: float(s.getFeature("FRAME"))
         ):
-            rows.append(
-                {
-                    "track_id": int(tid),
-                    "t": int(float(s.getFeature("FRAME"))),
-                    "y": float(s.getFeature("POSITION_Y")),
-                    "x": float(s.getFeature("POSITION_X")),
-                    "quality": float(s.getFeature("QUALITY")),
-                }
-            )
-    tracks_df = pd.DataFrame(
-        rows, columns=["track_id", "t", "y", "x", "quality"]
-    )
+            sid = int(s.ID())
+            info = {
+                "spot_id": sid,
+                "track_id": int(tid),
+                "t": int(float(s.getFeature("FRAME"))),
+                "y": float(s.getFeature("POSITION_Y")),
+                "x": float(s.getFeature("POSITION_X")),
+                "quality": float(s.getFeature("QUALITY")),
+            }
+            spot_info[sid] = info
+            rows.append(info)
+
+    # ------------------------------------------------------------------
+    # Extract edges to detect mother-daughter relationships
+    # ------------------------------------------------------------------
+    edges = []  # list of (source_spot_id, target_spot_id)
+    for tid in tm.trackIDs(True):
+        for edge in tm.trackEdges(tid):
+            src = tm.getEdgeSource(edge)
+            tgt = tm.getEdgeTarget(edge)
+            src_id = int(src.ID())
+            tgt_id = int(tgt.ID())
+            # Ensure src is the earlier-frame spot
+            if spot_info[src_id]["t"] > spot_info[tgt_id]["t"]:
+                src_id, tgt_id = tgt_id, src_id
+            edges.append((src_id, tgt_id))
+
+    # Build lineage: detect division events (one source → 2+ targets)
+    lineage_df = _build_lineage(rows, edges)
+
+    tracks_df = lineage_df[
+        ["track_id", "t", "y", "x", "quality", "lineage_id",
+         "parent_track_id", "generation"]
+    ].copy()
     csv_path = Path(output_directory) / "trackmate_tracks.csv"
     tracks_df.to_csv(csv_path, index=False)
+
+    # Save a concise lineage summary (one row per track)
+    if "lineage_id" in tracks_df.columns:
+        lineage_summary = (
+            tracks_df.groupby("track_id")
+            .agg(
+                lineage_id=("lineage_id", "first"),
+                parent_track_id=("parent_track_id", "first"),
+                generation=("generation", "first"),
+                first_frame=("t", "min"),
+                last_frame=("t", "max"),
+                n_frames=("t", "count"),
+            )
+            .reset_index()
+            .sort_values("lineage_id")
+        )
+        lineage_csv = Path(output_directory) / "lineage_summary.csv"
+        lineage_summary.to_csv(lineage_csv, index=False)
 
     masks = tifffile.imread(str(masks_path))
     linked = np.zeros_like(masks, dtype=np.uint32)
@@ -307,19 +480,12 @@ def generate_trackmate_labels(
 #  Fate assignment
 # ---------------------------------------------------------------------------
 
-def _is_cell_positive(cell_mask, positive_mask_frame, lower_cutoff, upper_cutoff):
-    """Return True if positive-pixel count is within [lower, upper]."""
-    count = int(np.count_nonzero(positive_mask_frame & cell_mask))
-    if count < int(lower_cutoff):
-        return False
-    if upper_cutoff is not None and count > int(upper_cutoff):
-        return False
-    return True
+def _is_cell_positive(cell_mask, positive_mask_frame):
+    """Return True if any positive pixel overlaps with the cell."""
+    return int(np.count_nonzero(positive_mask_frame & cell_mask)) > 0
 
 
-def assign_persistent_fates(
-    linked_labels, positive_masks, lower_cutoff=1, upper_cutoff=None
-):
+def assign_persistent_fates(linked_labels, positive_masks):
     """Persistent mode: fate = whichever fluorophore appears FIRST."""
     for name, mask in positive_masks.items():
         if linked_labels.shape != mask.shape:
@@ -347,10 +513,7 @@ def assign_persistent_fates(
                 ))
                 area_counts[fn] += pos_count
                 if first_frames[fn] is None and _is_cell_positive(
-                    cell,
-                    positive_masks[fn][frame],
-                    lower_cutoff=lower_cutoff,
-                    upper_cutoff=upper_cutoff,
+                    cell, positive_masks[fn][frame]
                 ):
                     first_frames[fn] = frame
 
@@ -387,9 +550,7 @@ def assign_persistent_fates(
     return df, locked
 
 
-def assign_snapshot_fates(
-    linked_labels, positive_masks, lower_cutoff=1, upper_cutoff=None
-):
+def assign_snapshot_fates(linked_labels, positive_masks):
     """Snapshot mode: per-frame classification by active fluorophores."""
     for name, mask in positive_masks.items():
         if linked_labels.shape != mask.shape:
@@ -407,12 +568,7 @@ def assign_snapshot_fates(
                 continue
             cell = fl == lid
             active = {
-                fn: _is_cell_positive(
-                    cell,
-                    positive_masks[fn][frame],
-                    lower_cutoff=lower_cutoff,
-                    upper_cutoff=upper_cutoff,
-                )
+                fn: _is_cell_positive(cell, positive_masks[fn][frame])
                 for fn in fluor_names
             }
             cat = "+".join(fn for fn in fluor_names if active[fn]) or "negative"
@@ -470,6 +626,64 @@ def compute_snapshot_percentages(snapshot_df, n_frames):
     return pd.DataFrame(data), cats
 
 
+# ---------------------------------------------------------------------------
+#  Colour inference from fluorophore names
+# ---------------------------------------------------------------------------
+
+# Mapping of common colour keywords to matplotlib colour strings and napari
+# colormaps.  Checked case-insensitively against fluorophore names.
+_COLOUR_KEYWORDS: Dict[str, dict] = {
+    "red":     {"mpl": "tab:red",    "napari": "red",     "rgb": (1.0, 0.0, 0.0)},
+    "green":   {"mpl": "tab:green",  "napari": "green",   "rgb": (0.0, 0.8, 0.0)},
+    "blue":    {"mpl": "tab:blue",   "napari": "blue",    "rgb": (0.2, 0.4, 1.0)},
+    "yellow":  {"mpl": "goldenrod",  "napari": "yellow",  "rgb": (0.9, 0.85, 0.0)},
+    "cyan":    {"mpl": "tab:cyan",   "napari": "cyan",    "rgb": (0.0, 0.8, 0.8)},
+    "magenta": {"mpl": "tab:pink",   "napari": "magenta", "rgb": (0.9, 0.0, 0.6)},
+}
+
+# Fallback sequence when the name doesn't match any colour keyword.
+_FALLBACK_MPL  = ["tab:red", "tab:green", "tab:blue", "tab:orange", "tab:purple"]
+_FALLBACK_NAP  = ["red", "green", "blue", "gray", "gray"]
+_FALLBACK_RGB  = [
+    (1.0, 0.0, 0.0), (0.0, 0.8, 0.0), (0.2, 0.4, 1.0),
+    (1.0, 0.5, 0.0), (0.5, 0.0, 0.8),
+]
+
+
+def _match_colour_keyword(name: str) -> Optional[str]:
+    """Return the matching colour keyword for *name*, or None."""
+    low = name.lower()
+    for kw in _COLOUR_KEYWORDS:
+        if kw in low:
+            return kw
+    return None
+
+
+def _infer_fluor_mpl(name: str, index: int = 0) -> str:
+    """Return a matplotlib colour for a fluorophore name."""
+    kw = _match_colour_keyword(name)
+    if kw:
+        return _COLOUR_KEYWORDS[kw]["mpl"]
+    return _FALLBACK_MPL[index % len(_FALLBACK_MPL)]
+
+
+def _infer_fluor_napari(name: str, index: int = 0) -> str:
+    """Return a napari colormap name for a fluorophore name."""
+    kw = _match_colour_keyword(name)
+    if kw:
+        return _COLOUR_KEYWORDS[kw]["napari"]
+    return _FALLBACK_NAP[index % len(_FALLBACK_NAP)]
+
+
+def _infer_fluor_rgb(name: str, index: int = 0):
+    """Return an (r, g, b) tuple for a fluorophore name."""
+    kw = _match_colour_keyword(name)
+    if kw:
+        return np.array(_COLOUR_KEYWORDS[kw]["rgb"])
+    return np.array(_FALLBACK_RGB[index % len(_FALLBACK_RGB)])
+
+
+# ---------------------------------------------------------------------------
 _FLUOR_COLORS = ["tab:red", "tab:green", "tab:blue"]
 
 
@@ -478,7 +692,7 @@ def plot_persistent_percentages(
 ):
     fig, ax = plt.subplots(figsize=(8, 4))
     for i, fn in enumerate(fluor_names):
-        c = _FLUOR_COLORS[i] if i < len(_FLUOR_COLORS) else f"C{i}"
+        c = _infer_fluor_mpl(fn, i)
         sns.lineplot(
             data=summary_df, x="frame", y=f"{fn}_pct",
             color=c, label=fn, ax=ax,
@@ -497,8 +711,9 @@ def plot_snapshot_percentages(
     summary_df, categories, title="Per-frame categories over time"
 ):
     fig, ax = plt.subplots(figsize=(8, 4))
-    pal = sns.color_palette("husl", len(categories))
-    for cat, c in zip(categories, pal):
+    cat_cmap = _build_category_colormap(categories)
+    for cat in categories:
+        c = cat_cmap.get(cat, (0.5, 0.5, 0.5))
         sns.lineplot(
             data=summary_df, x="frame", y=f"{cat}_pct",
             color=c, label=cat, ax=ax,
@@ -543,7 +758,13 @@ def plot_snapshot_trajectories(
     snapshot_df,
     title="Snapshot trajectories by category",
 ):
-    """Plot trajectories colored by per-frame snapshot category."""
+    """Plot trajectories colored by per-frame snapshot category.
+
+    When ``tracks_df`` contains ``lineage_id`` and ``parent_track_id``
+    columns (from TrackMate splitting), dashed lines are drawn connecting
+    the last position of a mother cell to the first position of each
+    daughter, making division events visible.
+    """
     if tracks_df is None or len(tracks_df) == 0:
         fig, ax = plt.subplots(figsize=(8, 6))
         ax.set_title(title)
@@ -553,8 +774,9 @@ def plot_snapshot_trajectories(
         return fig, ax
 
     categories = sorted(snapshot_df["category"].unique())
-    palette = sns.color_palette("husl", len(categories))
-    color_map = {cat: col for cat, col in zip(categories, palette)}
+    color_map = _build_category_colormap(categories)
+    if "negative" not in color_map:
+        color_map["negative"] = (0.6, 0.6, 0.6)
 
     pts = tracks_df.copy()
     pts["frame"] = pts["t"].astype(int)
@@ -563,8 +785,6 @@ def plot_snapshot_trajectories(
     cat_map = snapshot_df[["label_id", "frame", "category"]].copy()
     merged = pts.merge(cat_map, on=["label_id", "frame"], how="left")
     merged["category"] = merged["category"].fillna("negative")
-    if "negative" not in color_map:
-        color_map["negative"] = (0.6, 0.6, 0.6)
 
     fig, ax = plt.subplots(figsize=(8, 6))
     all_x, all_y = [], []
@@ -584,6 +804,34 @@ def plot_snapshot_trajectories(
         lc = LineCollection(segments, colors=seg_colors, linewidths=1.5, alpha=0.85)
         ax.add_collection(lc)
 
+    # Draw division connectors (mother → daughter dashed lines)
+    has_lineage = "parent_track_id" in tracks_df.columns
+    if has_lineage:
+        # Build per-track first/last positions
+        track_bounds = {}
+        for tid, grp in merged.groupby("track_id"):
+            grp = grp.sort_values("frame")
+            first = grp.iloc[0]
+            last = grp.iloc[-1]
+            track_bounds[int(tid)] = {
+                "first_xy": (float(first["x"]), float(first["y"])),
+                "last_xy": (float(last["x"]), float(last["y"])),
+            }
+        for tid, grp in merged.drop_duplicates("track_id").iterrows():
+            ptid = grp.get("parent_track_id")
+            if pd.isna(ptid):
+                continue
+            ptid = int(ptid)
+            child_tid = int(grp["track_id"])
+            if ptid in track_bounds and child_tid in track_bounds:
+                px, py = track_bounds[ptid]["last_xy"]
+                cx, cy = track_bounds[child_tid]["first_xy"]
+                ax.plot(
+                    [px, cx], [py, cy],
+                    color="black", linewidth=1.0, alpha=0.5,
+                    linestyle="--", zorder=0,
+                )
+
     if all_x and all_y:
         ax.set_xlim(min(all_x) - 10, max(all_x) + 10)
         ax.set_ylim(min(all_y) - 10, max(all_y) + 10)
@@ -599,6 +847,188 @@ def plot_snapshot_trajectories(
     ]
     ax.legend(handles=handles, title="Snapshot category", loc="best")
     plt.tight_layout()
+    return fig, ax
+
+
+def _build_category_colormap(categories):
+    """Build a colour map for snapshot categories.
+
+    Single fluorophores are coloured by name inference (e.g. a name
+    containing 'red' gets red, 'green' gets green).  Combinations get
+    blended RGB values.  'negative' is always grey.
+    """
+    # Discover unique single-fluorophore names in the order they first appear
+    singles = []
+    for cat in categories:
+        if cat == "negative":
+            continue
+        for part in cat.split("+"):
+            if part not in singles:
+                singles.append(part)
+
+    # Map each single fluorophore to its inferred RGB
+    single_rgb = {
+        name: _infer_fluor_rgb(name, i)
+        for i, name in enumerate(singles)
+    }
+
+    cmap = {}
+    for cat in categories:
+        if cat == "negative":
+            cmap[cat] = (0.7, 0.7, 0.7)
+            continue
+        parts = cat.split("+")
+        rgb = np.zeros(3)
+        for p in parts:
+            rgb += single_rgb.get(p, np.array([0.5, 0.5, 0.5]))
+        rgb = np.clip(rgb, 0, 1)
+        cmap[cat] = tuple(rgb.tolist())
+    return cmap
+
+
+def plot_snapshot_cell_timelines(
+    snapshot_df,
+    tracks_df=None,
+    title="Cell status over time",
+):
+    """Swimlane / timeline plot showing each cell's category at every frame.
+
+    Each row is one tracked cell; the x-axis is frame (time).  Segments are
+    coloured by the cell's snapshot category at that frame, producing a
+    visual timeline of transitions (e.g. red → red+green → green for FUCCI).
+
+    When *tracks_df* contains ``lineage_id`` columns (from TrackMate splitting),
+    cells are sorted by lineage so that mother and daughter cells are grouped
+    together, and a vertical line marks the division frame.
+
+    Returns (fig, ax).
+    """
+    if snapshot_df is None or len(snapshot_df) == 0:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "No snapshot data", ha="center", va="center",
+                transform=ax.transAxes)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig, ax
+
+    categories = sorted(snapshot_df["category"].unique())
+    color_map = _build_category_colormap(categories)
+
+    # ------- lineage-aware ordering -------
+    has_lineage = (
+        tracks_df is not None
+        and len(tracks_df) > 0
+        and "lineage_id" in tracks_df.columns
+    )
+    if has_lineage:
+        # Build label_id → lineage_id mapping
+        tdf = tracks_df.copy()
+        tdf["label_id"] = tdf["track_id"].astype(int) + 1
+        lin_map = tdf.drop_duplicates("label_id")[["label_id", "lineage_id", "parent_track_id"]]
+        lin_map = lin_map.set_index("label_id")
+
+        present_ids = set(snapshot_df["label_id"].unique())
+
+        def _lineage_sort_key(lid):
+            """Sort key that groups families together.
+
+            Uses the root number + lineage suffix so e.g.
+            1, 1.1, 1.2, 2, 3, 3.1, 3.2 stay together.
+            """
+            lid_str = lin_map.loc[lid, "lineage_id"] if lid in lin_map.index else str(lid)
+            # Pad each numeric part for correct lexicographic sorting
+            parts = str(lid_str).split(".")
+            return tuple(int(p) if p.isdigit() else 0 for p in parts)
+
+        cell_ids = sorted(
+            [lid for lid in snapshot_df["label_id"].unique()],
+            key=_lineage_sort_key,
+        )
+        label_display = {}
+        for lid in cell_ids:
+            if lid in lin_map.index:
+                label_display[lid] = str(lin_map.loc[lid, "lineage_id"])
+            else:
+                label_display[lid] = str(lid)
+    else:
+        cell_ids = sorted(snapshot_df["label_id"].unique())
+        label_display = {lid: str(lid) for lid in cell_ids}
+
+    n_cells = len(cell_ids)
+    cell_y = {cid: i for i, cid in enumerate(cell_ids)}
+
+    # Determine frame range
+    min_frame = int(snapshot_df["frame"].min())
+    max_frame = int(snapshot_df["frame"].max())
+
+    height = max(3, min(n_cells * 0.25 + 1, 40))
+    fig, ax = plt.subplots(figsize=(max(8, (max_frame - min_frame) * 0.15 + 2), height))
+
+    # Draw one coloured rectangle per cell per frame
+    for _, row in snapshot_df.iterrows():
+        lid = row["label_id"]
+        frame = int(row["frame"])
+        cat = row["category"]
+        colour = color_map.get(cat, (0.5, 0.5, 0.5))
+        y = cell_y[lid]
+        ax.barh(y, width=1, left=frame, height=0.8, color=colour,
+                edgecolor="none", linewidth=0)
+
+    # ------- draw division connectors -------
+    if has_lineage:
+        # For each daughter, draw a line from where the parent row ends
+        # to where the daughter row begins
+        for lid in cell_ids:
+            if lid not in lin_map.index:
+                continue
+            parent_tid = lin_map.loc[lid, "parent_track_id"]
+            if pd.isna(parent_tid):
+                continue
+            parent_lid = int(parent_tid) + 1
+            if parent_lid not in cell_y:
+                continue
+            # Find the frame where the daughter first appears
+            daughter_frames = snapshot_df.loc[
+                snapshot_df["label_id"] == lid, "frame"
+            ]
+            if len(daughter_frames) == 0:
+                continue
+            div_frame = int(daughter_frames.min())
+            y_parent = cell_y[parent_lid]
+            y_daughter = cell_y[lid]
+            ax.plot(
+                [div_frame, div_frame],
+                [y_parent, y_daughter],
+                color="black", linewidth=0.8, alpha=0.6,
+                linestyle="--",
+            )
+
+    ax.set_xlim(min_frame - 0.5, max_frame + 1.5)
+    ax.set_ylim(-0.5, n_cells - 0.5)
+    ax.set_xlabel("Frame", fontsize=11)
+    ax.set_ylabel("Cell (lineage ID)" if has_lineage else "Cell", fontsize=11)
+    ax.set_title(title, fontsize=12)
+
+    # Thin y-tick labels only when there are few cells
+    if n_cells <= 60:
+        ax.set_yticks(range(n_cells))
+        ax.set_yticklabels(
+            [label_display[c] for c in cell_ids],
+            fontsize=max(4, 8 - n_cells // 20),
+        )
+    else:
+        ax.set_yticks([])
+
+    # Legend
+    handles = [
+        Patch(facecolor=color_map[c], edgecolor="none", label=c)
+        for c in categories
+    ]
+    ax.legend(handles=handles, title="Category", loc="upper right",
+              fontsize=8, title_fontsize=9, framealpha=0.8)
+
+    fig.tight_layout()
     return fig, ax
 
 
@@ -630,20 +1060,20 @@ class CellDeathAnalysisApp:
         brightfield_channel: int = -1,
         fluor_1_name: str = "Annexin_V",
         fluor_1_channel: int = 0,
+        fluor_1_threshold: str = "mean",
         fluor_2_name: str = "PI",
         fluor_2_channel: int = 1,
+        fluor_2_threshold: str = "mean",
         fluor_3_name: str = "",
         fluor_3_channel: int = 2,
+        fluor_3_threshold: str = "mean",
     ):
         pass
 
     @staticmethod
     def _analysis_placeholder(
         analysis_mode: str = "persistent",
-        threshold_method: str = "mean",
         blur_sigma: float = 1.0,
-        positive_lower_cutoff: int = 1,
-        positive_upper_cutoff: int = 0,
         custom_model_file: Path = Path(),
     ):
         pass
@@ -662,6 +1092,7 @@ class CellDeathAnalysisApp:
         search_radius: float = 150.0,
         max_frame_gap: int = 3,
         allow_splitting: bool = False,
+        splitting_max_distance: float = 15.0,
         allow_merging: bool = False,
     ):
         pass
@@ -723,17 +1154,29 @@ class CellDeathAnalysisApp:
                 "min": 0,
                 "max": 20,
             },
+            fluor_1_threshold={
+                "label": "Fluorophore 1 threshold",
+                "choices": ["mean", "minimum", "yen", "otsu", "triangle"],
+            },
             fluor_2_name={"label": "Fluorophore 2 name"},
             fluor_2_channel={
                 "label": "Fluorophore 2 channel",
                 "min": 0,
                 "max": 20,
             },
+            fluor_2_threshold={
+                "label": "Fluorophore 2 threshold",
+                "choices": ["mean", "minimum", "yen", "otsu", "triangle"],
+            },
             fluor_3_name={"label": "Fluorophore 3 (blank=none)"},
             fluor_3_channel={
                 "label": "Fluorophore 3 channel",
                 "min": 0,
                 "max": 20,
+            },
+            fluor_3_threshold={
+                "label": "Fluorophore 3 threshold",
+                "choices": ["mean", "minimum", "yen", "otsu", "triangle"],
             },
             call_button=False,
         )
@@ -745,25 +1188,11 @@ class CellDeathAnalysisApp:
                 "label": "Analysis mode",
                 "choices": ["persistent", "snapshot"],
             },
-            threshold_method={
-                "label": "Threshold",
-                "choices": ["mean", "minimum", "yen", "otsu", "triangle"],
-            },
             blur_sigma={
                 "label": "Blur sigma",
                 "min": 0.1,
                 "max": 20.0,
                 "step": 0.1,
-            },
-            positive_lower_cutoff={
-                "label": "Positive lower cutoff (pixels)",
-                "min": 0,
-                "max": 1000000,
-            },
-            positive_upper_cutoff={
-                "label": "Positive upper cutoff (0=no max)",
-                "min": 0,
-                "max": 1000000,
             },
             custom_model_file={
                 "label": "Select file (optional custom model)",
@@ -806,6 +1235,12 @@ class CellDeathAnalysisApp:
             },
             max_frame_gap={"label": "Max frame gap", "min": 0, "max": 50},
             allow_splitting={"label": "Allow splitting"},
+            splitting_max_distance={
+                "label": "Splitting max distance",
+                "min": 1.0,
+                "max": 2000.0,
+                "step": 5.0,
+            },
             allow_merging={"label": "Allow merging"},
             call_button=False,
         )
@@ -913,32 +1348,22 @@ class CellDeathAnalysisApp:
         bf = int(self.channel_panel.brightfield_channel.value)
         names: List[str] = []
         channels: Dict[str, int] = {}
-        for attr_n, attr_c in [
-            ("fluor_1_name", "fluor_1_channel"),
-            ("fluor_2_name", "fluor_2_channel"),
-            ("fluor_3_name", "fluor_3_channel"),
+        thresholds: Dict[str, str] = {}
+        for attr_n, attr_c, attr_t in [
+            ("fluor_1_name", "fluor_1_channel", "fluor_1_threshold"),
+            ("fluor_2_name", "fluor_2_channel", "fluor_2_threshold"),
+            ("fluor_3_name", "fluor_3_channel", "fluor_3_threshold"),
         ]:
             n = str(getattr(self.channel_panel, attr_n).value).strip()
             c = int(getattr(self.channel_panel, attr_c).value)
+            t = str(getattr(self.channel_panel, attr_t).value)
             if n:
                 names.append(n)
                 channels[n] = c
+                thresholds[n] = t
         if not names:
             raise ValueError("At least one fluorophore name must be provided.")
-        return names, channels, bf
-
-    def _read_positive_cutoffs(self):
-        """Read and validate positive pixel count cutoffs from UI."""
-        lower = int(self.analysis_panel.positive_lower_cutoff.value)
-        upper_raw = int(self.analysis_panel.positive_upper_cutoff.value)
-        upper = None if upper_raw <= 0 else upper_raw
-        if lower < 0:
-            raise ValueError("Positive lower cutoff must be >= 0.")
-        if upper is not None and upper < lower:
-            raise ValueError(
-                "Positive upper cutoff must be 0 (no max) or >= lower cutoff."
-            )
-        return lower, upper
+        return names, channels, bf, thresholds
 
     def _resolve_single_run_paths(self):
         """Resolve and validate single-image input/output paths."""
@@ -957,7 +1382,7 @@ class CellDeathAnalysisApp:
 
     def _load_image_channels(self, tiff_path: Path):
         """Load TIFF and return brightfield + fluorophore stacks."""
-        fluor_names, fluor_channels, bf_ch = self._read_fluorophore_config()
+        fluor_names, fluor_channels, bf_ch, _thresholds = self._read_fluorophore_config()
         image = tifffile.imread(str(tiff_path))
         if image.ndim != 4:
             raise ValueError(
@@ -1046,6 +1471,7 @@ class CellDeathAnalysisApp:
         tm_search = float(self.trackmate_panel.search_radius.value)
         tm_gap = int(self.trackmate_panel.max_frame_gap.value)
         tm_split = bool(self.trackmate_panel.allow_splitting.value)
+        tm_split_dist = float(self.trackmate_panel.splitting_max_distance.value)
         tm_merge = bool(self.trackmate_panel.allow_merging.value)
 
         masks_path = work_dir / "masks_stack.tiff"
@@ -1063,6 +1489,7 @@ class CellDeathAnalysisApp:
             search_radius=tm_search,
             max_frame_gap=tm_gap,
             allow_track_splitting=tm_split,
+            splitting_max_distance=tm_split_dist,
             allow_track_merging=tm_merge,
             ij=self._ij,
         )
@@ -1088,9 +1515,8 @@ class CellDeathAnalysisApp:
 
     def _run_analysis_stage(self, tiff_path: Path, work_dir: Path, mode: str):
         """Run either persistent or snapshot analysis from saved tracking."""
-        thresh_method = str(self.analysis_panel.threshold_method.value)
+        _fn, _fc, _bf, thresh_map = self._read_fluorophore_config()
         blur_sigma = float(self.analysis_panel.blur_sigma.value)
-        positive_lower_cutoff, positive_upper_cutoff = self._read_positive_cutoffs()
 
         linked_path = work_dir / "linked_labels_trackmate.tiff"
         if not linked_path.exists():
@@ -1106,7 +1532,7 @@ class CellDeathAnalysisApp:
         self._set_progress(10, fmt="Fluorescence segmentation...")
         self._append_log("Segmenting fluorescence channels...")
         fl_out = segment_fluorescence(
-            fluor_images, blur_sigma=blur_sigma, threshold_method=thresh_method
+            fluor_images, blur_sigma=blur_sigma, threshold_method=thresh_map
         )
         pos_masks = {fn: fl_out[fn]["positive"] for fn in fluor_names}
         pos_labels = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
@@ -1117,12 +1543,24 @@ class CellDeathAnalysisApp:
         assignments_df = None
         snapshot_df = None
 
+        # Load lineage info from tracks CSV (if available)
+        tracks_csv = work_dir / "trackmate_tracks.csv"
+        _lineage_cols = ["track_id", "lineage_id", "parent_track_id", "generation"]
+        if tracks_csv.exists():
+            _tracks_raw = pd.read_csv(tracks_csv)
+            if "lineage_id" in _tracks_raw.columns:
+                _lineage_map = (
+                    _tracks_raw.drop_duplicates("track_id")[_lineage_cols]
+                    .copy()
+                )
+            else:
+                _lineage_map = pd.DataFrame(columns=_lineage_cols)
+        else:
+            _lineage_map = pd.DataFrame(columns=_lineage_cols)
+
         if mode == "persistent":
             assignments_df, locked_labels = assign_persistent_fates(
-                linked_labels,
-                pos_masks,
-                lower_cutoff=positive_lower_cutoff,
-                upper_cutoff=positive_upper_cutoff,
+                linked_labels, pos_masks,
             )
             assignments_df = assignments_df.sort_values("label_id").reset_index(
                 drop=True
@@ -1135,6 +1573,10 @@ class CellDeathAnalysisApp:
             persistent_by_cell["track_id"] = (
                 persistent_by_cell["cell_id"].astype(int) - 1
             )
+            if len(_lineage_map) > 0:
+                persistent_by_cell = persistent_by_cell.merge(
+                    _lineage_map, on="track_id", how="left"
+                )
             persistent_by_cell_csv = work_dir / "persistent_by_cell.csv"
             persistent_by_cell.to_csv(persistent_by_cell_csv, index=False)
             self._append_log(
@@ -1142,10 +1584,7 @@ class CellDeathAnalysisApp:
             )
         else:
             snapshot_df = assign_snapshot_fates(
-                linked_labels,
-                pos_masks,
-                lower_cutoff=positive_lower_cutoff,
-                upper_cutoff=positive_upper_cutoff,
+                linked_labels, pos_masks,
             )
             snapshot_df = snapshot_df.sort_values(
                 ["label_id", "frame"]
@@ -1158,8 +1597,18 @@ class CellDeathAnalysisApp:
             snapshot_by_cell["track_id"] = (
                 snapshot_by_cell["cell_id"].astype(int) - 1
             )
+            if len(_lineage_map) > 0:
+                snapshot_by_cell = snapshot_by_cell.merge(
+                    _lineage_map, on="track_id", how="left"
+                )
             snapshot_by_cell_csv = work_dir / "snapshot_by_cell_long.csv"
             snapshot_by_cell.to_csv(snapshot_by_cell_csv, index=False)
+
+            # Wide-format: one row per cell, columns for each frame's category
+            # Include lineage columns alongside the pivoted frame categories
+            _pivot_cols = ["cell_id"]
+            if "lineage_id" in snapshot_by_cell.columns:
+                _pivot_cols += ["lineage_id", "parent_track_id", "generation"]
             snapshot_wide = (
                 snapshot_by_cell.pivot(
                     index="cell_id", columns="frame", values="category"
@@ -1173,6 +1622,19 @@ class CellDeathAnalysisApp:
                 else f"frame_{int(c)}_category"
                 for c in snapshot_wide.columns
             ]
+            # Merge lineage info into the wide table
+            if "lineage_id" in snapshot_by_cell.columns:
+                _lin_per_cell = (
+                    snapshot_by_cell.drop_duplicates("cell_id")
+                    [["cell_id", "lineage_id", "parent_track_id", "generation"]]
+                )
+                snapshot_wide = snapshot_wide.merge(
+                    _lin_per_cell, on="cell_id", how="left"
+                )
+                # Move lineage columns right after cell_id
+                _front = ["cell_id", "lineage_id", "parent_track_id", "generation"]
+                _rest = [c for c in snapshot_wide.columns if c not in _front]
+                snapshot_wide = snapshot_wide[_front + _rest]
             snapshot_wide_csv = work_dir / "snapshot_by_cell_wide.csv"
             snapshot_wide.to_csv(snapshot_wide_csv, index=False)
             cats = sorted(snapshot_df["category"].unique())
@@ -1260,6 +1722,16 @@ class CellDeathAnalysisApp:
                 traj_pdf = work_dir / f"snapshot_trajectories_{cutoff}pct.pdf"
                 fig_traj.savefig(str(traj_pdf), bbox_inches="tight")
                 plt.close(fig_traj)
+
+                # Timeline: one row per cell, coloured by category at each frame
+                fig_tl, _ = plot_snapshot_cell_timelines(
+                    fs,
+                    tracks_df=ft,
+                    title=f"{stem} — cell timelines ≥{cutoff}% frames (n={n_cells} cells)",
+                )
+                tl_pdf = work_dir / f"snapshot_timelines_{cutoff}pct.pdf"
+                fig_tl.savefig(str(tl_pdf), bbox_inches="tight")
+                plt.close(fig_tl)
         summary_df.to_csv(summary_csv, index=False)
         fig.savefig(str(plot_pdf), bbox_inches="tight")
         plt.close(fig)
@@ -1458,11 +1930,9 @@ class CellDeathAnalysisApp:
         work_dir = out_dir / tiff_path.stem
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        fluor_names, fluor_channels, bf_ch = self._read_fluorophore_config()
+        fluor_names, fluor_channels, bf_ch, thresh_map = self._read_fluorophore_config()
         mode = str(self.analysis_panel.analysis_mode.value)
-        thresh_method = str(self.analysis_panel.threshold_method.value)
         blur_sigma = float(self.analysis_panel.blur_sigma.value)
-        positive_lower_cutoff, positive_upper_cutoff = self._read_positive_cutoffs()
 
         cp_model = str(self.cellpose_panel.model_type.value)
         cp_custom_model = None
@@ -1474,6 +1944,7 @@ class CellDeathAnalysisApp:
         tm_search = float(self.trackmate_panel.search_radius.value)
         tm_gap = int(self.trackmate_panel.max_frame_gap.value)
         tm_split = bool(self.trackmate_panel.allow_splitting.value)
+        tm_split_dist = float(self.trackmate_panel.splitting_max_distance.value)
         tm_merge = bool(self.trackmate_panel.allow_merging.value)
 
         # 1. Load image  (expect 4-D: T, C, Y, X)
@@ -1534,6 +2005,7 @@ class CellDeathAnalysisApp:
             search_radius=tm_search,
             max_frame_gap=tm_gap,
             allow_track_splitting=tm_split,
+            splitting_max_distance=tm_split_dist,
             allow_track_merging=tm_merge,
             ij=self._ij,
         )
@@ -1550,7 +2022,7 @@ class CellDeathAnalysisApp:
         self._set_progress(85, fmt="Fluorescence segmentation...")
         self._append_log("Segmenting fluorescence channels...")
         fl_out = segment_fluorescence(
-            fluor_images, blur_sigma=blur_sigma, threshold_method=thresh_method
+            fluor_images, blur_sigma=blur_sigma, threshold_method=thresh_map
         )
         pos_masks = {fn: fl_out[fn]["positive"] for fn in fluor_names}
         pos_labels = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
@@ -1562,13 +2034,24 @@ class CellDeathAnalysisApp:
         assignments_df = None
         snapshot_df = None
 
+        # Build lineage lookup from tracks_df
+        _lineage_cols = ["track_id", "lineage_id", "parent_track_id", "generation"]
+        if "lineage_id" in tracks_df.columns:
+            _lineage_map = tracks_df.drop_duplicates("track_id")[_lineage_cols].copy()
+        else:
+            _lineage_map = pd.DataFrame(columns=_lineage_cols)
+
         if mode == "persistent":
             assignments_df, locked_labels = assign_persistent_fates(
-                linked_labels,
-                pos_masks,
-                lower_cutoff=positive_lower_cutoff,
-                upper_cutoff=positive_upper_cutoff,
+                linked_labels, pos_masks,
             )
+            # Merge lineage into assignments
+            if len(_lineage_map) > 0:
+                assignments_df = assignments_df.copy()
+                assignments_df["track_id"] = assignments_df["label_id"].astype(int) - 1
+                assignments_df = assignments_df.merge(
+                    _lineage_map, on="track_id", how="left"
+                )
             csv = work_dir / "assignments.csv"
             assignments_df.to_csv(csv, index=False)
             self._append_log(
@@ -1576,11 +2059,15 @@ class CellDeathAnalysisApp:
             )
         else:
             snapshot_df = assign_snapshot_fates(
-                linked_labels,
-                pos_masks,
-                lower_cutoff=positive_lower_cutoff,
-                upper_cutoff=positive_upper_cutoff,
+                linked_labels, pos_masks,
             )
+            # Merge lineage into snapshot
+            if len(_lineage_map) > 0:
+                snapshot_df = snapshot_df.copy()
+                snapshot_df["track_id"] = snapshot_df["label_id"].astype(int) - 1
+                snapshot_df = snapshot_df.merge(
+                    _lineage_map, on="track_id", how="left"
+                )
             csv = work_dir / "snapshot.csv"
             snapshot_df.to_csv(csv, index=False)
             cats = sorted(snapshot_df["category"].unique())
@@ -1669,7 +2156,7 @@ class CellDeathAnalysisApp:
         )
 
         for i, (fn, img) in enumerate(data["fluor_images"].items()):
-            cmap = _VIEWER_CMAPS[i] if i < len(_VIEWER_CMAPS) else "gray"
+            cmap = _infer_fluor_napari(fn, i)
             self.viewer.add_image(
                 img, name=f"{fn} fluorescence",
                 colormap=cmap, blending="additive",
@@ -1705,11 +2192,6 @@ class CellDeathAnalysisApp:
             )
             self.viewer.add_tracks(
                 track_arr, name="Tracks", tail_length=50, opacity=0.8
-            )
-            pts = tdf[["t", "y", "x"]].to_numpy(dtype=float)
-            self.viewer.add_points(
-                pts, name="Track points",
-                size=3, face_color="yellow", opacity=0.6,
             )
 
     # -- button handlers ----------------------------------------------------
