@@ -57,7 +57,6 @@ import pathlib
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
 import joblib
 import numpy as np
 import pandas as pd
@@ -159,53 +158,13 @@ def read_pixel_size(tif_path: str) -> List[float]:
     return [x, y, z]
 
 
-def _load_imaging_record(path: Optional[str] = None) -> Optional[dict]:
-    """Load an imaging_record YAML file.  Returns None if path is None or missing."""
-    if path is None:
-        return None
-    p = pathlib.Path(path)
-    if not p.is_file():
-        return None
-    with open(p, "r", encoding="utf-8") as fh:
-        return yaml.safe_load(fh)
-
-
-def _apply_yaml_rules(filename: str, record: dict) -> dict:
-    """Match filename against the rules in an imaging_record dict.
-
-    Returns a flat dict of column-name → value (e.g. ``{"well": 1, "day": 3, …}``).
-    """
-    fn = filename.lower().replace("_", "")
-    result: Dict[str, Any] = {}
-    for field, spec in record.items():
-        if not isinstance(spec, dict) or "rules" not in spec:
-            continue
-        default = spec.get("default")
-        matched = False
-        for rule in spec["rules"]:
-            if rule["pattern"] in fn:
-                result[field] = rule["value"]
-                matched = True
-                break
-        if not matched:
-            result[field] = default if default is not None else np.nan
-    return result
-
-
 def add_image_details(
     df: pd.DataFrame,
     filename: str,
     flag: str,
-    imaging_record: Optional[dict] = None,
-    cell_type_override: Optional[str] = None,
-    treatment_override: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Add experimental details extracted from the filename to a DataFrame.
-
-    If *imaging_record* (a parsed YAML dict) is supplied the metadata rules
-    come from there.  Otherwise the original hard-coded rules are used as
-    a fallback so that existing scripts still work unchanged.
 
     Parameters
     ----------
@@ -215,9 +174,6 @@ def add_image_details(
         The filename of the image (used to extract experimental details).
     flag : str
         A flag indicating any segmentation issues detected during processing.
-    imaging_record : dict or None
-        Parsed contents of an ``imaging_record.yml`` file.  When provided,
-        the hard-coded rules are skipped entirely.
 
     Returns
     -------
@@ -278,12 +234,6 @@ def add_image_details(
         df["treatment"] = "ABT737"
     else:
         df["treatment"] = "untreated"
-
-    # Apply user overrides (if provided, they replace inferred values)
-    if cell_type_override:
-        df["cell_type"] = cell_type_override
-    if treatment_override:
-        df["treatment"] = treatment_override
 
     df["image_type"] = df["condition"].astype(str) + ", d" + df["day"].astype(str)
     return df
@@ -632,7 +582,6 @@ class AcinarImage:
         self.qc_dir = None  # set externally or via batch_analyse
         self.return_volumes = False  # when True, populate self.volumes
         self.volumes: Dict[str, np.ndarray] = {}  # name -> 3D array
-        self.imaging_record: Optional[dict] = None  # set externally or via batch_analyse
 
         # Mask paths
         self.nuclear_mask_path = nuclear_mask_path
@@ -1465,10 +1414,15 @@ class AcinarImage:
         The ratio (edge / inner) indicates whether membrane signal is enriched
         at the acinus boundary.
 
+        When a protein channel is set, an additional **exterior shell** is
+        created just outside the acinus boundary (same width as the other
+        shells) and the median protein intensity in that ring is reported
+        together with ratios against the two membrane rings.
+
         Parameters
         ----------
         shell_width_um : float
-            Width of both shells in micrometres (default: 3).
+            Width of all shells in micrometres (default: 3).
         inner_shell_offset_um : float
             Gap between the outer edge of the edge shell and the start of the
             inner shell, in micrometres (default: 5).
@@ -1488,6 +1442,12 @@ class AcinarImage:
         membrane_rescaled = self._rescale_volume(
             self.image[:, self.membrane_channel, :, :]
         )
+
+        has_protein = self.protein_channel is not None
+        if has_protein:
+            protein_rescaled = self._rescale_volume(
+                self.image[:, self.protein_channel, :, :]
+            )
 
         # Acinus-level measurements
         acinus_regions = regionprops(acinus_mask)
@@ -1517,33 +1477,64 @@ class AcinarImage:
         inner_median = float(np.median(membrane_rescaled[inner_shell])) if inner_shell.any() else np.nan
 
         if not np.isnan(inner_median) and inner_median > 0:
-            ratio = edge_median / inner_median
+            membrane_ratio = edge_median / inner_median
         else:
-            ratio = np.nan
+            membrane_ratio = np.nan
 
-        df = pd.DataFrame([{
+        # Exterior protein shell (just outside the acinus boundary)
+        protein_exterior_median = np.nan
+        protein_to_edge_ratio = np.nan
+        protein_to_inner_ratio = np.nan
+        exterior_shell = np.zeros_like(acinus_bool)
+
+        if has_protein:
+            shell_width_px_int = max(1, int(round(shell_width_px)))
+            expanded = expand_labels(acinus_mask, distance=shell_width_px_int)
+            exterior_shell = (expanded > 0) & ~acinus_bool
+
+            if exterior_shell.any():
+                protein_exterior_median = float(np.median(protein_rescaled[exterior_shell]))
+                if not np.isnan(edge_median) and edge_median > 0:
+                    protein_to_edge_ratio = protein_exterior_median / edge_median
+                if not np.isnan(inner_median) and inner_median > 0:
+                    protein_to_inner_ratio = protein_exterior_median / inner_median
+
+        row = {
             "acinus_volume_um3": acinus_vol,
             "acinus_roundness": acinus_roundness,
             "membrane_edge_shell_median": edge_median,
             "membrane_inner_shell_median": inner_median,
-            "membrane_edge_to_inner_ratio": ratio,
+            "membrane_edge_to_inner_ratio": membrane_ratio,
             "edge_shell_volume_um3": float(edge_shell.sum()) * px ** 3,
             "inner_shell_volume_um3": float(inner_shell.sum()) * px ** 3,
+            "protein_exterior_shell_median": protein_exterior_median,
+            "protein_to_membrane_edge_ratio": protein_to_edge_ratio,
+            "protein_to_membrane_inner_ratio": protein_to_inner_ratio,
+            "exterior_shell_volume_um3": float(exterior_shell.sum()) * px ** 3,
             "flag": flag,
-        }])
+        }
+        df = pd.DataFrame([row])
 
         # QC plot
-        self._save_qc("membrane_upregulation", [
+        qc_overlays = [
             (self._mid_z(acinus_mask), "Acinus mask"),
             (self._mid_z(edge_shell.astype(np.uint8)), "Edge shell"),
             (self._mid_z(inner_shell.astype(np.uint8)), "Inner shell"),
-        ], title_extra=f"ratio={ratio:.2f}" if not np.isnan(ratio) else "ratio=NaN",
-           red_channel=self.membrane_channel)
+        ]
+        if has_protein:
+            qc_overlays.append(
+                (self._mid_z(exterior_shell.astype(np.uint8)), "Exterior shell (protein)")
+            )
+        self._save_qc("membrane_upregulation", qc_overlays,
+            title_extra=f"mem_ratio={membrane_ratio:.2f}" if not np.isnan(membrane_ratio) else "mem_ratio=NaN",
+            red_channel=self.protein_channel if has_protein else self.membrane_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
             self.volumes["edge_shell"] = edge_shell
             self.volumes["inner_shell"] = inner_shell
+            if has_protein:
+                self.volumes["exterior_shell"] = exterior_shell
 
         return df
 
@@ -1582,9 +1573,6 @@ class AcinarImage:
                 flag = df["flag"].iloc[0] if "flag" in df.columns and len(df) > 0 else "None"
                 df = add_image_details(
                     df, self.filename, flag,
-                    imaging_record=self.imaging_record,
-                    cell_type_override=getattr(self, 'cell_type_override', None),
-                    treatment_override=getattr(self, 'treatment_override', None),
                 )
                 results[name] = df
             except Exception as e:
@@ -1611,7 +1599,6 @@ def batch_analyse(
     image_dir: str,
     analyses: List[str],
     *,
-    file_extension: str = "tif",
     n_jobs: int = 3,
     output_csv: Optional[str] = None,
     nuclear_mask_dir: Optional[str] = None,
@@ -1620,9 +1607,6 @@ def batch_analyse(
     edu_mask_dir: Optional[str] = None,
     mito_mask_dir: Optional[str] = None,
     qc_dir: Optional[str] = None,
-    imaging_record_path: Optional[str] = None,
-    cell_type_override: Optional[str] = None,
-    treatment_override: Optional[str] = None,
     progress_callback=None,
     **kwargs,
 ) -> Dict[str, pd.DataFrame]:
@@ -1632,25 +1616,17 @@ def batch_analyse(
     Mask directories, if provided, must contain one mask TIFF per image TIFF
     (matched alphabetically).
 
-    Parameters
-    ----------
-    imaging_record_path : str or None
-        Path to an ``imaging_record.yml`` file that defines how experimental
-        metadata is extracted from filenames.  When ``None`` the hard-coded
-        parsing rules are used instead.
-
     Returns a dict mapping analysis name -> concatenated DataFrame for all images.
     """
-    imaging_record = _load_imaging_record(imaging_record_path)
 
-    image_paths = sorted(pathlib.Path(image_dir).rglob(f"*.{file_extension}"))
+    image_paths = sorted(pathlib.Path(image_dir).rglob("*.tif"))
     if not image_paths:
-        raise FileNotFoundError(f"No .{file_extension} files found in {image_dir}")
+        raise FileNotFoundError(f"No .tif files found in {image_dir}")
 
     def _sorted_masks(d):
         if d is None:
             return [None] * len(image_paths)
-        masks = sorted(pathlib.Path(d).rglob(f"*.{file_extension}"))
+        masks = sorted(pathlib.Path(d).rglob("*.tif"))
         if len(masks) != len(image_paths):
             raise ValueError(
                 f"Mask count mismatch: {len(image_paths)} images vs {len(masks)} masks in {d}"
@@ -1680,9 +1656,6 @@ def batch_analyse(
             **ctor_kwargs,
         )
         img.qc_dir = qc_dir
-        img.imaging_record = imaging_record
-        img.cell_type_override = cell_type_override
-        img.treatment_override = treatment_override
         return img.run(analyses, **analysis_kwargs)
 
     print(f"Found {len(image_paths)} images. Running analyses: {analyses}")
@@ -1745,7 +1718,6 @@ Examples:
         choices=sorted(VALID_ANALYSES),
         help="Which analyses to run",
     )
-    parser.add_argument("--file-extension", default="tif")
     parser.add_argument("--nuclear-channel", type=int, default=0)
     parser.add_argument("--membrane-channel", type=int, default=None)
     parser.add_argument("--protein-channel", type=int, default=None)
@@ -1761,15 +1733,12 @@ Examples:
     parser.add_argument("--search-radius-um", type=float, default=5.0)
     parser.add_argument("--n-jobs", type=int, default=3)
     parser.add_argument("--output", default="acinar_results.csv", help="Output CSV path")
-    parser.add_argument("--imaging-record", default=None,
-                        help="Path to imaging_record.yml for metadata extraction")
 
     args = parser.parse_args()
 
     batch_analyse(
         image_dir=args.image_dir,
         analyses=args.analyses,
-        file_extension=args.file_extension,
         n_jobs=args.n_jobs,
         output_csv=args.output,
         nuclear_mask_dir=args.nuclear_mask_dir,
@@ -1785,7 +1754,6 @@ Examples:
         mito_channel=args.mito_channel,
         proximity_protein_channel=args.proximity_protein_channel,
         search_radius_um=args.search_radius_um,
-        imaging_record_path=args.imaging_record,
     )
 
 

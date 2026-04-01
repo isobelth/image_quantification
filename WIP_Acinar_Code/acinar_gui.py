@@ -122,8 +122,6 @@ class AcinarAnalysisGUI:
             edu_mask_dir={"label": "EdU Mask Folder", "mode": "d"},
             mito_mask_dir={"label": "Mito Mask Folder", "mode": "d"},
             output_dir={"label": "Output Directory", "mode": "d"},
-            imaging_record={"label": "Imaging Record (.yml)", "mode": "r",
-                            "filter": "*.yml *.yaml"},
             call_button=False,
         )
 
@@ -136,15 +134,7 @@ class AcinarAnalysisGUI:
             edu_channel={"label": "EdU Ch (-1=none)", "value": -1, "min": -1, "max": 20},
             mito_channel={"label": "Mito Ch (-1=none)", "value": -1, "min": -1, "max": 20},
             proximity_protein_channel={"label": "Prox. Protein Ch (-1=none)", "value": -1, "min": -1, "max": 20},
-            file_extension={"label": "File Extension", "value": "tif"},
             n_jobs={"label": "Parallel Jobs", "value": 3, "min": 1, "max": 32},
-            call_button=False,
-        )
-
-        self.override_panel = magicgui(
-            self._override_stub,
-            cell_type={"label": "Cell Type (blank = infer from filename)", "value": ""},
-            treatment={"label": "Treatment (blank = infer from filename)", "value": ""},
             call_button=False,
         )
 
@@ -187,8 +177,6 @@ class AcinarAnalysisGUI:
                 self.folder_panel,
                 Label(value="── Channel Config ──"),
                 self.channel_panel,
-                Label(value="── Metadata Overrides (optional) ──"),
-                self.override_panel,
                 Label(value="── Analyses ──"),
                 self.analysis_panel,
                 Label(value="── Run ──"),
@@ -226,7 +214,6 @@ class AcinarAnalysisGUI:
         edu_mask_dir: Path = Path(),
         mito_mask_dir: Path = Path(),
         output_dir: Path = Path(),
-        imaging_record: Path = Path(),
     ):
         return None
 
@@ -253,15 +240,7 @@ class AcinarAnalysisGUI:
         edu_channel: int = -1,
         mito_channel: int = -1,
         proximity_protein_channel: int = -1,
-        file_extension: str = "tif",
         n_jobs: int = 3,
-    ):
-        return None
-
-    @staticmethod
-    def _override_stub(
-        cell_type: str = "",
-        treatment: str = "",
     ):
         return None
 
@@ -332,10 +311,9 @@ class AcinarAnalysisGUI:
                     errors.append(f"'{reqs['label']}' requires {_CHANNEL_LABELS[ckey]} (>= 0).")
 
         # Check that mask directories have the same number of files as images
-        ext = str(self.channel_panel.file_extension.value)
         image_dir = folders.get("image_dir")
         if image_dir is not None:
-            n_images = len(list(Path(image_dir).rglob(f"*.{ext}")))
+            n_images = len(list(Path(image_dir).rglob("*.tif")))
             mask_dirs = {
                 "nuclear_mask_dir": "Nuclear Mask Folder",
                 "membrane_mask_dir": "Membrane Mask Folder",
@@ -346,10 +324,10 @@ class AcinarAnalysisGUI:
             for key, label in mask_dirs.items():
                 d = folders.get(key)
                 if d is not None:
-                    n_masks = len(list(Path(d).rglob(f"*.{ext}")))
+                    n_masks = len(list(Path(d).rglob("*.tif")))
                     if n_masks != n_images:
                         errors.append(
-                            f"{label} has {n_masks} .{ext} file(s) but Image "
+                            f"{label} has {n_masks} .tif file(s) but Image "
                             f"Folder has {n_images}. They must match."
                         )
 
@@ -363,9 +341,8 @@ class AcinarAnalysisGUI:
         d = self._dir_or_none(value)
         if d is None:
             return
-        ext = str(self.channel_panel.file_extension.value)
-        n = len(list(Path(d).rglob(f"*.{ext}")))
-        self._log(f"[INFO] Found {n} .{ext} file(s) in {d}")
+        n = len(list(Path(d).rglob("*.tif")))
+        self._log(f"[INFO] Found {n} .tif file(s) in {d}")
 
     def _on_run_clicked(self):
         """Validate settings, store config, then close the window."""
@@ -385,14 +362,9 @@ class AcinarAnalysisGUI:
         output_csv = str(Path(output_dir) / "acinar_results.csv")
         qc_dir = str(Path(output_dir) / "qc_plots") if self.analysis_panel.save_qc_plots.value else None
 
-        # Read metadata overrides (empty string → None → infer from filename)
-        cell_type_override = str(self.override_panel.cell_type.value).strip() or None
-        treatment_override = str(self.override_panel.treatment.value).strip() or None
-
         self._config = {
             "image_dir": folders["image_dir"],
             "analyses": analyses,
-            "file_extension": str(self.channel_panel.file_extension.value),
             "n_jobs": int(self.channel_panel.n_jobs.value),
             "output_csv": output_csv,
             "nuclear_mask_dir": folders.get("nuclear_mask_dir"),
@@ -408,8 +380,6 @@ class AcinarAnalysisGUI:
             "mito_channel": channels.get("mito_channel"),
             "proximity_protein_channel": channels.get("proximity_protein_channel"),
             "qc_dir": qc_dir,
-            "cell_type_override": cell_type_override,
-            "treatment_override": treatment_override,
         }
 
         self._log("=" * 50)
