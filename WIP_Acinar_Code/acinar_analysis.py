@@ -184,54 +184,62 @@ def add_image_details(
     df["flag"] = flag
 
 
-    # Legacy hard-coded rules (kept for backward compatibility)
-    fn = filename.lower().replace("_", "")
+    # All checks use the original lowercase filename (with underscores)
+    fn = filename.lower()
 
     # Well number
-    if "well1" in fn:
+    if "well1" in fn or "well_1" in fn:
         df["well"] = 1
-    elif "well2" in fn:
+    elif "well2" in fn or "well_2" in fn:
         df["well"] = 2
     else:
         df["well"] = np.nan
 
     # Day
-    if "_d0" in filename.lower() or "d0" in fn:
+    if "_d0" in fn or fn.startswith("d0"):
         df["day"] = 0
-    elif "d1" in fn:
+    elif "_d1_" in fn or fn.startswith("d1_") or fn.endswith("_d1"):
         df["day"] = 1
-    elif "_d3" in filename.lower() or "d3" in fn:
+    elif "_d3" in fn or fn.startswith("d3"):
         df["day"] = 3
-    else:
+    elif "_7d" in fn or "_d7" in fn or fn.startswith("7d") or fn.startswith("d7"):
         df["day"] = 7
+    else:
+        df["day"] = np.nan
 
     # Cell type
-    if "wt" in fn:
+    if "_wt_" in fn or fn.startswith("wt_"):
         df["cell_type"] = "WT"
-    elif "bad" in fn:
+    elif "_bad" in fn:
         df["cell_type"] = "BADER"
     else:
         df["cell_type"] = "WT"
 
     # Stiffness
-    if "soft" in fn:
+    if "_soft" in fn:
         df["condition"] = "soft"
-    elif "stiff" in fn:
+    elif "_stiff" in fn:
         df["condition"] = "stiff"
     else:
         df["condition"] = "blank"
 
     # Treatment
-    if "bleb" in fn:
+    if "_12g10" in fn or fn.startswith("12g10"):
+        df["treatment"] = "12g10"
+    elif "_bleb" in fn:
         df["treatment"] = "blebbistatin"
-    elif "4oht" in fn:
+    elif "_4oht" in fn:
         df["treatment"] = "4OHT"
-    elif "rock" in fn or "y27632" in fn:
+    elif "_rock" in fn or "_y27632" in fn:
         df["treatment"] = "ROCKi"
-    elif "batimastat" in fn or "mmpi" in fn:
+    elif "_batimastat" in fn or "_mmpi" in fn:
         df["treatment"] = "batimastat"
-    elif "abt" in fn:
+    elif "_abt" in fn:
         df["treatment"] = "ABT737"
+    elif "_mab13" in fn:
+        df["treatment"] = "mAb13"
+    elif "_igg" in fn:
+        df["treatment"] = "IgG"
     else:
         df["treatment"] = "untreated"
 
