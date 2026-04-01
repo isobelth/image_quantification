@@ -1483,8 +1483,11 @@ class AcinarImage:
 
         # Exterior protein shell (just outside the acinus boundary)
         protein_exterior_median = np.nan
-        protein_to_edge_ratio = np.nan
-        protein_to_inner_ratio = np.nan
+        protein_exterior_to_membrane_edge_ratio = np.nan
+        protein_exterior_to_membrane_inner_ratio = np.nan
+        protein_edge_median = np.nan
+        protein_edge_to_membrane_edge_ratio = np.nan
+        protein_edge_to_membrane_inner_ratio = np.nan
         exterior_shell = np.zeros_like(acinus_bool)
 
         if has_protein:
@@ -1495,9 +1498,16 @@ class AcinarImage:
             if exterior_shell.any():
                 protein_exterior_median = float(np.median(protein_rescaled[exterior_shell]))
                 if not np.isnan(edge_median) and edge_median > 0:
-                    protein_to_edge_ratio = protein_exterior_median / edge_median
+                    protein_exterior_to_membrane_edge_ratio = protein_exterior_median / edge_median
                 if not np.isnan(inner_median) and inner_median > 0:
-                    protein_to_inner_ratio = protein_exterior_median / inner_median
+                    protein_exterior_to_membrane_inner_ratio = protein_exterior_median / inner_median
+
+            if edge_shell.any():
+                protein_edge_median = float(np.median(protein_rescaled[edge_shell]))
+                if not np.isnan(edge_median) and edge_median > 0:
+                    protein_edge_to_membrane_edge_ratio = protein_edge_median / edge_median
+                if not np.isnan(inner_median) and inner_median > 0:
+                    protein_edge_to_membrane_inner_ratio = protein_edge_median / inner_median
 
         row = {
             "acinus_volume_um3": acinus_vol,
@@ -1508,8 +1518,11 @@ class AcinarImage:
             "edge_shell_volume_um3": float(edge_shell.sum()) * px ** 3,
             "inner_shell_volume_um3": float(inner_shell.sum()) * px ** 3,
             "protein_exterior_shell_median": protein_exterior_median,
-            "protein_to_membrane_edge_ratio": protein_to_edge_ratio,
-            "protein_to_membrane_inner_ratio": protein_to_inner_ratio,
+            "protein_exterior_to_membrane_edge_ratio": protein_exterior_to_membrane_edge_ratio,
+            "protein_exterior_to_membrane_inner_ratio": protein_exterior_to_membrane_inner_ratio,
+            "protein_edge_shell_median": protein_edge_median,
+            "protein_edge_to_membrane_edge_ratio": protein_edge_to_membrane_edge_ratio,
+            "protein_edge_to_membrane_inner_ratio": protein_edge_to_membrane_inner_ratio,
             "exterior_shell_volume_um3": float(exterior_shell.sum()) * px ** 3,
             "flag": flag,
         }
