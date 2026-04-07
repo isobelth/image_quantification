@@ -43,7 +43,7 @@ from skimage.filters import (
     threshold_triangle,
     threshold_yen,
 )
-from skimage.measure import label
+from skimage.measure import label, regionprops
 
 warnings.filterwarnings("ignore")
 
@@ -86,6 +86,26 @@ def _configure_java_home():
 # ---------------------------------------------------------------------------
 #  Processing functions
 # ---------------------------------------------------------------------------
+
+
+def _measure_cell_shape(binary_mask):
+    """Return (area, roundness) for a single-cell binary mask.
+
+    Roundness is the ratio of the minor to major axis of the equivalent
+    ellipse fitted via the inertia tensor (1.0 = perfect circle, 0 = line).
+    Returns (0, np.nan) when the mask is empty.
+    """
+    area = int(np.count_nonzero(binary_mask))
+    if area == 0:
+        return 0, np.nan
+    props = regionprops(binary_mask.astype(np.uint8))
+    if not props:
+        return area, np.nan
+    p = props[0]
+    major = p.major_axis_length
+    minor = p.minor_axis_length
+    roundness = minor / major if major > 0 else np.nan
+    return area, roundness
 
 
 def _build_lineage(spot_rows, edges):
@@ -207,7 +227,7 @@ def cellpose_live_segmentation(
     flow_threshold=0.4,
     cellprob_threshold=0.0,
     min_size=15,
-    model_type="cyto3",
+    model_type="cpsam",
     custom_model_path=None,
     gpu=True,
     progress_callback=None,
@@ -223,13 +243,17 @@ def cellpose_live_segmentation(
         stack = stack[np.newaxis, :, :]
 
     if custom_model_path:
+        print(f"[Cellpose] Loading custom model: {custom_model_path}")
         model = models.CellposeModel(
             gpu=gpu, pretrained_model=str(custom_model_path)
         )
     else:
-        model = models.CellposeModel(gpu=gpu, model_type=model_type)
+        print(f"[Cellpose] Loading built-in model: {model_type}  (GPU={gpu})")
+        model = models.CellposeModel(gpu=gpu, pretrained_model=model_type)
+    print("[Cellpose] Model loaded successfully.")
 
     if diameter is None:
+        print("[Cellpose] Auto-estimating diameter from first frame...")
         m0, _, _ = model.eval(
             stack[0],
             diameter=None,
@@ -243,9 +267,11 @@ def cellpose_live_segmentation(
             diameter = 2 * np.sqrt((np.median(areas) if areas else 700) / np.pi)
         else:
             diameter = 30.0
+        print(f"[Cellpose] Estimated diameter: {diameter:.1f} px")
 
     n_frames = stack.shape[0]
     out = np.zeros(stack.shape, dtype=np.uint16)
+    print(f"[Cellpose] Segmenting {n_frames} frame(s) (diameter={diameter:.1f}, flow_thresh={flow_threshold}, cellprob_thresh={cellprob_threshold}, min_size={min_size})...")
 
     for i in range(n_frames):
         m, _, _ = model.eval(
@@ -256,10 +282,13 @@ def cellpose_live_segmentation(
             min_size=min_size,
             resample=True,
         )
+        n_cells = m.max()
         out[i] = m.astype(np.uint16)
+        print(f"[Cellpose] Frame {i + 1}/{n_frames} — {n_cells} cell(s) detected")
         if progress_callback is not None:
             progress_callback(i + 1, n_frames)
 
+    print(f"[Cellpose] Segmentation complete. Processed {n_frames} frame(s).")
     return out[0] if n_frames == 1 else out
 
 
@@ -495,20 +524,30 @@ def assign_persistent_fates(linked_labels, positive_masks):
     fluor_names = list(positive_masks.keys())
 
     rows = []
+    frame_rows = []
     for label_id in label_ids:
         first_frames = {fn: None for fn in fluor_names}
         area_counts = {fn: 0 for fn in fluor_names}
+        cell_areas = []
+        cell_roundnesses = []
         for frame in range(n_frames):
             cell = linked_labels[frame] == label_id
             if not np.any(cell):
                 continue
+            area, roundness = _measure_cell_shape(cell)
+            cell_areas.append(area)
+            cell_roundnesses.append(roundness)
+            fr = {"label_id": int(label_id), "frame": frame,
+                  "area": area, "roundness": roundness}
             for fn in fluor_names:
                 pos_count = int(np.count_nonzero(
                     positive_masks[fn][frame] & cell
                 ))
                 area_counts[fn] += pos_count
+                fr[f"{fn}_positive_area"] = pos_count
                 if first_frames[fn] is None and pos_count > 0:
                     first_frames[fn] = frame
+            frame_rows.append(fr)
 
         fate, first_positive = "negative", np.nan
         best = n_frames + 1
@@ -518,6 +557,8 @@ def assign_persistent_fates(linked_labels, positive_masks):
                 best, fate, first_positive = ff, fn, ff
 
         row = {"label_id": int(label_id)}
+        row["mean_area"] = float(np.mean(cell_areas)) if cell_areas else np.nan
+        row["mean_roundness"] = float(np.nanmean(cell_roundnesses)) if cell_roundnesses else np.nan
         for fn in fluor_names:
             row[f"first_{fn}_frame"] = (
                 first_frames[fn] if first_frames[fn] is not None else np.nan
@@ -540,7 +581,16 @@ def assign_persistent_fates(linked_labels, positive_masks):
             np.isin(linked_labels, ids), linked_labels, 0
         ).astype(np.uint32)
 
-    return df, locked
+    # Build per-frame DataFrame and merge fate from summary
+    per_frame_df = pd.DataFrame(frame_rows)
+    if len(per_frame_df) > 0:
+        fate_map = df.set_index("label_id")["fate"]
+        per_frame_df["fate"] = per_frame_df["label_id"].map(fate_map)
+        per_frame_df = per_frame_df.sort_values(
+            ["label_id", "frame"]
+        ).reset_index(drop=True)
+
+    return df, locked, per_frame_df
 
 
 def assign_snapshot_fates(linked_labels, positive_masks):
@@ -560,12 +610,14 @@ def assign_snapshot_fates(linked_labels, positive_masks):
             if lid == 0:
                 continue
             cell = fl == lid
+            area, roundness = _measure_cell_shape(cell)
             active = {
                 fn: bool(np.any(positive_masks[fn][frame] & cell))
                 for fn in fluor_names
             }
             cat = "+".join(fn for fn in fluor_names if active[fn]) or "negative"
-            row = {"label_id": int(lid), "frame": frame}
+            row = {"label_id": int(lid), "frame": frame,
+                   "area": area, "roundness": roundness}
             row.update(active)
             for fn in fluor_names:
                 row[f"{fn}_positive_area"] = int(np.count_nonzero(
@@ -1045,7 +1097,7 @@ class CellDeathAnalysisApp:
 
     @staticmethod
     def _cellpose_placeholder(
-        model_type: str = "cyto3",
+        model_type: str = "cpsam",
         min_size: int = 15,
         use_gpu: bool = True,
     ):
@@ -1175,7 +1227,7 @@ class CellDeathAnalysisApp:
             self._cellpose_placeholder,
             model_type={
                 "label": "Model",
-                "choices": ["cyto3", "cyto2", "cyto", "nuclei"],
+                "choices": ["cpsam", "cyto3", "cyto2", "cyto", "nuclei"],
             },
             min_size={"label": "Min cell size (px)", "min": 0, "max": 2000},
             use_gpu={"label": "Use GPU"},
@@ -1524,7 +1576,7 @@ class CellDeathAnalysisApp:
             _lineage_map = pd.DataFrame(columns=_lineage_cols)
 
         if mode == "persistent":
-            assignments_df, locked_labels = assign_persistent_fates(
+            assignments_df, locked_labels, persistent_per_frame = assign_persistent_fates(
                 linked_labels, pos_masks,
             )
             assignments_df = assignments_df.sort_values("label_id").reset_index(
@@ -1532,6 +1584,10 @@ class CellDeathAnalysisApp:
             )
             csv = work_dir / "assignments_persistent.csv"
             assignments_df.to_csv(csv, index=False)
+            if len(persistent_per_frame) > 0:
+                pf_csv = work_dir / "persistent_per_frame.csv"
+                persistent_per_frame.to_csv(pf_csv, index=False)
+                self._append_log(f"  Per-frame metrics -> {pf_csv.name}")
             persistent_by_cell = assignments_df.rename(
                 columns={"label_id": "cell_id"}
             ).copy()
