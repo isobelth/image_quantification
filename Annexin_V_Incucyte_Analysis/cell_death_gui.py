@@ -480,11 +480,6 @@ def generate_trackmate_labels(
 #  Fate assignment
 # ---------------------------------------------------------------------------
 
-def _is_cell_positive(cell_mask, positive_mask_frame):
-    """Return True if any positive pixel overlaps with the cell."""
-    return int(np.count_nonzero(positive_mask_frame & cell_mask)) > 0
-
-
 def assign_persistent_fates(linked_labels, positive_masks):
     """Persistent mode: fate = whichever fluorophore appears FIRST."""
     for name, mask in positive_masks.items():
@@ -512,9 +507,7 @@ def assign_persistent_fates(linked_labels, positive_masks):
                     positive_masks[fn][frame] & cell
                 ))
                 area_counts[fn] += pos_count
-                if first_frames[fn] is None and _is_cell_positive(
-                    cell, positive_masks[fn][frame]
-                ):
+                if first_frames[fn] is None and pos_count > 0:
                     first_frames[fn] = frame
 
         fate, first_positive = "negative", np.nan
@@ -568,7 +561,7 @@ def assign_snapshot_fates(linked_labels, positive_masks):
                 continue
             cell = fl == lid
             active = {
-                fn: _is_cell_positive(cell, positive_masks[fn][frame])
+                fn: bool(np.any(positive_masks[fn][frame] & cell))
                 for fn in fluor_names
             }
             cat = "+".join(fn for fn in fluor_names if active[fn]) or "negative"
@@ -630,8 +623,6 @@ def compute_snapshot_percentages(snapshot_df, n_frames):
 #  Colour inference from fluorophore names
 # ---------------------------------------------------------------------------
 
-# Mapping of common colour keywords to matplotlib colour strings and napari
-# colormaps.  Checked case-insensitively against fluorophore names.
 _COLOUR_KEYWORDS: Dict[str, dict] = {
     "red":     {"mpl": "tab:red",    "napari": "red",     "rgb": (1.0, 0.0, 0.0)},
     "green":   {"mpl": "tab:green",  "napari": "green",   "rgb": (0.0, 0.8, 0.0)},
@@ -641,50 +632,25 @@ _COLOUR_KEYWORDS: Dict[str, dict] = {
     "magenta": {"mpl": "tab:pink",   "napari": "magenta", "rgb": (0.9, 0.0, 0.6)},
 }
 
-# Fallback sequence when the name doesn't match any colour keyword.
-_FALLBACK_MPL  = ["tab:red", "tab:green", "tab:blue", "tab:orange", "tab:purple"]
-_FALLBACK_NAP  = ["red", "green", "blue", "gray", "gray"]
-_FALLBACK_RGB  = [
-    (1.0, 0.0, 0.0), (0.0, 0.8, 0.0), (0.2, 0.4, 1.0),
-    (1.0, 0.5, 0.0), (0.5, 0.0, 0.8),
+_FALLBACK_COLOURS = [
+    {"mpl": "tab:red",    "napari": "red",   "rgb": (1.0, 0.0, 0.0)},
+    {"mpl": "tab:green",  "napari": "green", "rgb": (0.0, 0.8, 0.0)},
+    {"mpl": "tab:blue",   "napari": "blue",  "rgb": (0.2, 0.4, 1.0)},
+    {"mpl": "tab:orange", "napari": "gray",  "rgb": (1.0, 0.5, 0.0)},
+    {"mpl": "tab:purple", "napari": "gray",  "rgb": (0.5, 0.0, 0.8)},
 ]
 
 
-def _match_colour_keyword(name: str) -> Optional[str]:
-    """Return the matching colour keyword for *name*, or None."""
+def _infer_colour(name: str, index: int = 0) -> dict:
+    """Return {"mpl", "napari", "rgb"} colour mapping for a fluorophore name."""
     low = name.lower()
-    for kw in _COLOUR_KEYWORDS:
+    for kw, entry in _COLOUR_KEYWORDS.items():
         if kw in low:
-            return kw
-    return None
-
-
-def _infer_fluor_mpl(name: str, index: int = 0) -> str:
-    """Return a matplotlib colour for a fluorophore name."""
-    kw = _match_colour_keyword(name)
-    if kw:
-        return _COLOUR_KEYWORDS[kw]["mpl"]
-    return _FALLBACK_MPL[index % len(_FALLBACK_MPL)]
-
-
-def _infer_fluor_napari(name: str, index: int = 0) -> str:
-    """Return a napari colormap name for a fluorophore name."""
-    kw = _match_colour_keyword(name)
-    if kw:
-        return _COLOUR_KEYWORDS[kw]["napari"]
-    return _FALLBACK_NAP[index % len(_FALLBACK_NAP)]
-
-
-def _infer_fluor_rgb(name: str, index: int = 0):
-    """Return an (r, g, b) tuple for a fluorophore name."""
-    kw = _match_colour_keyword(name)
-    if kw:
-        return np.array(_COLOUR_KEYWORDS[kw]["rgb"])
-    return np.array(_FALLBACK_RGB[index % len(_FALLBACK_RGB)])
+            return entry
+    return _FALLBACK_COLOURS[index % len(_FALLBACK_COLOURS)]
 
 
 # ---------------------------------------------------------------------------
-_FLUOR_COLORS = ["tab:red", "tab:green", "tab:blue"]
 
 
 def plot_persistent_percentages(
@@ -692,7 +658,7 @@ def plot_persistent_percentages(
 ):
     fig, ax = plt.subplots(figsize=(8, 4))
     for i, fn in enumerate(fluor_names):
-        c = _infer_fluor_mpl(fn, i)
+        c = _infer_colour(fn, i)["mpl"]
         sns.lineplot(
             data=summary_df, x="frame", y=f"{fn}_pct",
             color=c, label=fn, ax=ax,
@@ -868,7 +834,7 @@ def _build_category_colormap(categories):
 
     # Map each single fluorophore to its inferred RGB
     single_rgb = {
-        name: _infer_fluor_rgb(name, i)
+        name: np.array(_infer_colour(name, i)["rgb"])
         for i, name in enumerate(singles)
     }
 
@@ -1032,7 +998,6 @@ def plot_snapshot_cell_timelines(
     return fig, ax
 
 
-_VIEWER_CMAPS = ["red", "green", "blue"]
 _CP_DEFAULT_DIAMETER = None
 _CP_DEFAULT_FLOW_THRESHOLD = 0.4
 _CP_DEFAULT_CELLPROB_THRESHOLD = 0.0
@@ -1919,228 +1884,6 @@ class CellDeathAnalysisApp:
         finally:
             self._set_buttons_enabled(True)
 
-    # -- pipeline -----------------------------------------------------------
-
-    def _run_pipeline(self, tiff_path: Path, out_dir: Path):
-        """Run the full pipeline on one multi-channel timelapse TIFF.
-
-        Returns *(result_dict, run_data)* where *run_data* holds numpy
-        arrays suitable for populating the napari viewer.
-        """
-        work_dir = out_dir / tiff_path.stem
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-        fluor_names, fluor_channels, bf_ch, thresh_map = self._read_fluorophore_config()
-        mode = str(self.analysis_panel.analysis_mode.value)
-        blur_sigma = float(self.analysis_panel.blur_sigma.value)
-
-        cp_model = str(self.cellpose_panel.model_type.value)
-        cp_custom_model = None
-        cp_min = int(self.cellpose_panel.min_size.value)
-        cp_gpu = bool(self.cellpose_panel.use_gpu.value)
-        cp_model, cp_custom_model = self._resolve_cellpose_model_config()
-
-        tm_init = float(self.trackmate_panel.initial_search_radius.value)
-        tm_search = float(self.trackmate_panel.search_radius.value)
-        tm_gap = int(self.trackmate_panel.max_frame_gap.value)
-        tm_split = bool(self.trackmate_panel.allow_splitting.value)
-        tm_split_dist = float(self.trackmate_panel.splitting_max_distance.value)
-        tm_merge = bool(self.trackmate_panel.allow_merging.value)
-
-        # 1. Load image  (expect 4-D: T, C, Y, X)
-        self._set_progress(2, fmt="Loading image...")
-        self._append_log(f"Loading: {tiff_path.name}")
-        image = tifffile.imread(str(tiff_path))
-        if image.ndim != 4:
-            raise ValueError(
-                f"Expected 4-D TIFF (T, C, Y, X), got {image.ndim}-D "
-                f"shape {image.shape}."
-            )
-        n_channels = image.shape[1]
-        for fn, ch in fluor_channels.items():
-            if ch >= n_channels:
-                raise ValueError(
-                    f"Channel {ch} for '{fn}' is out of range "
-                    f"(image has {n_channels} channels)."
-                )
-        bf_image = image[:, bf_ch, :, :]
-        fluor_images = {
-            fn: image[:, fluor_channels[fn], :, :] for fn in fluor_names
-        }
-        self._append_log(
-            f"  Shape: {image.shape}  ({image.shape[0]} frames, "
-            f"{n_channels} channels)"
-        )
-
-        # 2. Cellpose segmentation
-        self._set_progress(5, fmt="Cellpose: starting...")
-        self._append_log("Running Cellpose segmentation...")
-
-        def _cp_cb(frame, total):
-            pct = 5 + int(50 * frame / total)
-            self._set_progress(pct, fmt=f"Cellpose: frame {frame}/{total}")
-
-        masks_stack = cellpose_live_segmentation(
-            bf_image,
-            diameter=_CP_DEFAULT_DIAMETER,
-            flow_threshold=_CP_DEFAULT_FLOW_THRESHOLD,
-            cellprob_threshold=_CP_DEFAULT_CELLPROB_THRESHOLD,
-            min_size=cp_min,
-            model_type=cp_model,
-            custom_model_path=cp_custom_model,
-            gpu=cp_gpu,
-            progress_callback=_cp_cb,
-        )
-        masks_path = work_dir / "masks_stack.tiff"
-        tifffile.imwrite(str(masks_path), masks_stack.astype(np.uint16))
-        self._append_log(f"  Saved masks -> {masks_path.name}")
-
-        # 3. TrackMate tracking
-        self._set_progress(0, maximum=0, fmt="Running TrackMate...")
-        self._append_log("Running TrackMate (UI may be unresponsive)...")
-        tm_out = generate_trackmate_labels(
-            masks_path=masks_path,
-            output_directory=work_dir,
-            initial_search_radius=tm_init,
-            search_radius=tm_search,
-            max_frame_gap=tm_gap,
-            allow_track_splitting=tm_split,
-            splitting_max_distance=tm_split_dist,
-            allow_track_merging=tm_merge,
-            ij=self._ij,
-        )
-        self._ij = tm_out["ij"]  # cache for reuse
-        tracks_df = tm_out["trackmate_tracks_df"]
-        linked_labels = tm_out["linked_labels"]
-        n_tracks = int(tracks_df["track_id"].nunique())
-        self._set_progress(80, fmt="TrackMate done")
-        self._append_log(
-            f"  Tracked {n_tracks} cells, {len(tracks_df)} points"
-        )
-
-        # 4. Fluorescence segmentation
-        self._set_progress(85, fmt="Fluorescence segmentation...")
-        self._append_log("Segmenting fluorescence channels...")
-        fl_out = segment_fluorescence(
-            fluor_images, blur_sigma=blur_sigma, threshold_method=thresh_map
-        )
-        pos_masks = {fn: fl_out[fn]["positive"] for fn in fluor_names}
-        pos_labels = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
-
-        # 5. Fate assignment
-        self._set_progress(90, fmt="Assigning fates...")
-        self._append_log(f"Assigning fates (mode={mode})...")
-        locked_labels = None
-        assignments_df = None
-        snapshot_df = None
-
-        # Build lineage lookup from tracks_df
-        _lineage_cols = ["track_id", "lineage_id", "parent_track_id", "generation"]
-        if "lineage_id" in tracks_df.columns:
-            _lineage_map = tracks_df.drop_duplicates("track_id")[_lineage_cols].copy()
-        else:
-            _lineage_map = pd.DataFrame(columns=_lineage_cols)
-
-        if mode == "persistent":
-            assignments_df, locked_labels = assign_persistent_fates(
-                linked_labels, pos_masks,
-            )
-            # Merge lineage into assignments
-            if len(_lineage_map) > 0:
-                assignments_df = assignments_df.copy()
-                assignments_df["track_id"] = assignments_df["label_id"].astype(int) - 1
-                assignments_df = assignments_df.merge(
-                    _lineage_map, on="track_id", how="left"
-                )
-            csv = work_dir / "assignments.csv"
-            assignments_df.to_csv(csv, index=False)
-            self._append_log(
-                f"  Fates: {dict(assignments_df['fate'].value_counts())}"
-            )
-        else:
-            snapshot_df = assign_snapshot_fates(
-                linked_labels, pos_masks,
-            )
-            # Merge lineage into snapshot
-            if len(_lineage_map) > 0:
-                snapshot_df = snapshot_df.copy()
-                snapshot_df["track_id"] = snapshot_df["label_id"].astype(int) - 1
-                snapshot_df = snapshot_df.merge(
-                    _lineage_map, on="track_id", how="left"
-                )
-            csv = work_dir / "snapshot.csv"
-            snapshot_df.to_csv(csv, index=False)
-            cats = sorted(snapshot_df["category"].unique())
-            self._append_log(f"  Categories: {cats}")
-
-        # 6. Percentages + plot
-        self._set_progress(95, fmt="Computing percentages...")
-        n_fr = linked_labels.shape[0]
-        stem = tiff_path.stem
-
-        if mode == "persistent":
-            summary_df = compute_persistent_percentages(
-                assignments_df, n_fr, fluor_names
-            )
-            fig, _ = plot_persistent_percentages(
-                summary_df, fluor_names, title=stem
-            )
-        else:
-            summary_df, cats = compute_snapshot_percentages(
-                snapshot_df, n_fr
-            )
-            fig, _ = plot_snapshot_percentages(summary_df, cats, title=stem)
-
-        summary_csv = work_dir / "percentages.csv"
-        plot_pdf = work_dir / "percentages.pdf"
-        summary_df.to_csv(summary_csv, index=False)
-        fig.savefig(str(plot_pdf), bbox_inches="tight")
-        plt.close(fig)
-        self._append_log(
-            f"  Saved: {summary_csv.name}, {plot_pdf.name}"
-        )
-        self._set_progress(100, fmt="Done")
-
-        # -- build summary result row --
-        result = {
-            "filename": tiff_path.name,
-            "analysis_mode": mode,
-            "n_frames": n_fr,
-            "n_tracked_cells": n_tracks,
-        }
-        if mode == "persistent":
-            for fn in fluor_names:
-                result[f"n_{fn}"] = int(
-                    (assignments_df["fate"] == fn).sum()
-                )
-                result[f"final_pct_{fn}"] = float(
-                    summary_df[f"{fn}_pct"].iloc[-1]
-                )
-            result["n_negative"] = int(
-                (assignments_df["fate"] == "negative").sum()
-            )
-            result["final_total_pct"] = float(
-                summary_df["total_positive_pct"].iloc[-1]
-            )
-        else:
-            last = snapshot_df[snapshot_df["frame"] == n_fr - 1]
-            for cat in sorted(snapshot_df["category"].unique()):
-                result[f"final_pct_{cat}"] = (
-                    100.0 * (last["category"] == cat).sum() / max(len(last), 1)
-                )
-
-        run_data = {
-            "bf_image": bf_image,
-            "fluor_images": fluor_images,
-            "masks_stack": masks_stack,
-            "linked_labels": linked_labels,
-            "pos_labels": pos_labels,
-            "locked_labels": locked_labels,
-            "tracks_df": tracks_df,
-            "mode": mode,
-        }
-        return result, run_data
-
     # -- viewer -------------------------------------------------------------
 
     def _show_in_viewer(self, data: dict):
@@ -2156,7 +1899,7 @@ class CellDeathAnalysisApp:
         )
 
         for i, (fn, img) in enumerate(data["fluor_images"].items()):
-            cmap = _infer_fluor_napari(fn, i)
+            cmap = _infer_colour(fn, i)["napari"]
             self.viewer.add_image(
                 img, name=f"{fn} fluorescence",
                 colormap=cmap, blending="additive",
@@ -2195,33 +1938,6 @@ class CellDeathAnalysisApp:
             )
 
     # -- button handlers ----------------------------------------------------
-
-    def _analyse_single_image(self):
-        """Run the full pipeline on a single TIFF and show in napari."""
-        tiff_path = Path(str(self.file_panel.single_tiff.value))
-        if not tiff_path.exists() or not tiff_path.is_file():
-            self._append_log(
-                "[ERROR] Select a valid TIFF file in the Files panel."
-            )
-            return
-        out_dir = Path(str(self.file_panel.output_directory.value))
-        if not str(out_dir).strip() or str(out_dir) == ".":
-            out_dir = tiff_path.parent / "cell_death_output"
-
-        self._set_buttons_enabled(False)
-        try:
-            result, run_data = self._run_pipeline(tiff_path, out_dir)
-            self._results.append(result)
-            self._results_df = pd.DataFrame(self._results)
-            self._show_in_viewer(run_data)
-            self._append_log(
-                f"[OK] Analysis complete: {tiff_path.name}"
-            )
-        except Exception as e:
-            self._set_progress(0, fmt="Error")
-            self._append_log(f"[ERROR] {type(e).__name__}: {e}")
-        finally:
-            self._set_buttons_enabled(True)
 
     def _analyse_folder(self):
         """Batch-process every TIFF in a folder, save combined CSV."""
