@@ -1,0 +1,28 @@
+name: cell-death
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.4
+  - numpy
+  - pandas
+  - scipy
+  - scikit-image
+  - matplotlib
+  - seaborn
+  - tifffile
+  - napari
+  - magicgui
+  - qtpy
+  - pyqt
+  - ipykernel
+  - pip
+  - pip:
+      - cellpose
+      - pyimagej
+      - scyjava
+      - jdk4py
