@@ -88,24 +88,61 @@ def _configure_java_home():
 # ---------------------------------------------------------------------------
 
 
-def _measure_cell_shape(binary_mask):
-    """Return (area, roundness) for a single-cell binary mask.
+def measure_all_cells_in_frame(label_image):
+    """Measure area and roundness for every cell in a label image.
 
-    Roundness is the ratio of the minor to major axis of the equivalent
-    ellipse fitted via the inertia tensor (1.0 = perfect circle, 0 = line).
-    Returns (0, np.nan) when the mask is empty.
+    Parameters
+    ----------
+    label_image : ndarray (H, W), uint32
+        Label image where each cell has a unique integer ID (0 = background).
+
+    Returns
+    -------
+    dict[int, tuple[int, float]]
+        {cell_label_id: (area_in_pixels, roundness)} for every cell.
+        Roundness = minor_axis / major_axis (1.0 = circle, → 0 = elongated).
     """
-    area = int(np.count_nonzero(binary_mask))
-    if area == 0:
-        return 0, np.nan
-    props = regionprops(binary_mask.astype(np.uint8))
-    if not props:
-        return area, np.nan
-    p = props[0]
-    major = p.major_axis_length
-    minor = p.minor_axis_length
-    roundness = minor / major if major > 0 else np.nan
-    return area, roundness
+    measurements = {}
+    for region in regionprops(label_image):
+        major_axis = region.major_axis_length
+        minor_axis = region.minor_axis_length
+        roundness = minor_axis / major_axis if major_axis > 0 else np.nan
+        measurements[region.label] = (region.area, roundness)
+    return measurements
+
+
+def assign_positive_objects_to_cells(positive_labels_frame, linked_labels_frame):
+    """Link thresholded fluorescence blobs to tracked cells using CoMs.
+
+    For each connected component in the thresholded fluorescence image
+    (positive_labels_frame), finds its centroid (center-of-mass pixel)
+    and assign it to a labelled cell (linked_labels_frame) based on which cell label sits at that pixel.
+    If the centroid falls on background (label 0),
+    the blob is discarded.
+
+    Parameters
+    ----------
+    positive_labels_frame : ndarray (H, W), uint32
+        Labels of thresholded fluorescence for one frame.
+    linked_labels_frame : ndarray (H, W), uint32
+        Tracked cell segmentation labels for the same frame (from TrackMate).
+
+    Returns
+    -------
+    cell_positive_area : dict[int, int]
+        {cell_label_id: total fluorescence-positive pixel area} for cells
+        that had at least one blob centroid land inside them.
+    """
+    cell_positive_area = {}
+    max_y = linked_labels_frame.shape[0] - 1
+    max_x = linked_labels_frame.shape[1] - 1
+    for region in regionprops(positive_labels_frame):
+        centroid_y = min(max(int(round(region.centroid[0])), 0), max_y)
+        centroid_x = min(max(int(round(region.centroid[1])), 0), max_x)
+        cell_id = int(linked_labels_frame[centroid_y, centroid_x])
+        if cell_id > 0:
+            cell_positive_area[cell_id] = cell_positive_area.get(cell_id, 0) + region.area
+    return cell_positive_area
 
 
 def _build_lineage(spot_rows, edges):
@@ -292,11 +329,35 @@ def cellpose_live_segmentation(
     return out[0] if n_frames == 1 else out
 
 
-def segment_fluorescence(stacks, blur_sigma=1.0, threshold_method="mean"):
-    """Blur, threshold, and label fluorescence stacks (1-3 fluorophores).
+def segment_fluorescence(stacks, blur_sigma=1.0, threshold_method="otsu"):
+    """Segment fluorescence channels by Gaussian blur + per-frame thresholding.
 
-    *threshold_method* can be a single string (applied to all channels)
-    or a ``dict`` mapping channel name to its own threshold method.
+    For each fluorophore stack:
+      1. Apply Gaussian blur
+      2. Compute a separate threshold for each frame independently.
+      3. Binarise: pixels above that frame's threshold = "positive".
+      4. Generate labels of fluorescence-positive "blobs" in each frame.
+
+    Parameters
+    ----------
+    stacks : dict[str, ndarray]
+        {fluorophore_name: array of shape (n_frames, H, W)}.
+    blur_sigma : float
+        Sigma for Gaussian smoothing
+    threshold_method : str or dict[str, str]
+        Thresholding algorithm name(s). A single string applies to all
+        channels; a dict maps each channel name to its own method.
+        Supported: "mean", "minimum", "yen", "otsu", "triangle".
+
+    Returns
+    -------
+    result : dict
+        Top-level keys: "threshold_methods", "blur_sigma", plus one key
+        per fluorophore name. Each fluorophore entry is a dictionary with:
+        - "blurred"             : ndarray (n_frames, H, W) — smoothed stack
+        - "thresholds_per_frame": ndarray (n_frames,) — threshold for each frame
+        - "positive"            : ndarray (n_frames, H, W) bool — binary mask
+        - "positive_labels"     : ndarray (n_frames, H, W) uint32 — labels of fluorescence-positive blobs per frame
     """
     threshold_functions = {
         "mean": threshold_mean,
@@ -305,37 +366,84 @@ def segment_fluorescence(stacks, blur_sigma=1.0, threshold_method="mean"):
         "otsu": threshold_otsu,
         "triangle": threshold_triangle,
     }
-
-    # Normalise to a dict keyed by channel name
     if isinstance(threshold_method, str):
-        _thresh_map = {name: threshold_method.lower() for name in stacks}
+        threshold_map = {name: threshold_method.lower() for name in stacks}
     else:
-        _thresh_map = {name: str(threshold_method.get(name, "mean")).lower()
-                       for name in stacks}
+        threshold_map = {name: str(threshold_method.get(name, "otsu")).lower() for name in stacks}
 
-    result = {"threshold_methods": _thresh_map, "blur_sigma": blur_sigma}
+    result = {"threshold_methods": threshold_map, "blur_sigma": blur_sigma}
+    for channel_name, stack in stacks.items():
+        threshold_method_name = threshold_map[channel_name]
+        if threshold_method_name not in threshold_functions:
+            raise ValueError(f"Unsupported threshold for '{channel_name}': {threshold_method_name}")
+        threshold_function = threshold_functions[threshold_method_name]
+        blurred = np.stack([gaussian(frame, sigma=blur_sigma, preserve_range=True) for frame in stack], axis=0)
 
-    for name, stack in stacks.items():
-        tm_name = _thresh_map[name]
-        if tm_name not in threshold_functions:
-            raise ValueError(f"Unsupported threshold for '{name}': {tm_name}")
-        fn = threshold_functions[tm_name]
-        blurred = np.stack(
-            [gaussian(f, sigma=blur_sigma, preserve_range=True) for f in stack],
-            axis=0,
-        )
-        thresh = fn(blurred)
-        positive = blurred > thresh
-        positive_labels = np.stack(
-            [label(f) for f in positive], axis=0
-        ).astype(np.uint32)
-        result[name] = {
+        # Per-frame thresholding to handle signal drift over time
+        num_frames = blurred.shape[0]
+        thresholds_per_frame = np.zeros(num_frames)
+        positive = np.zeros_like(blurred, dtype=bool)
+        positive_labels = np.zeros(blurred.shape, dtype=np.uint32)
+        for frame_index in range(num_frames):
+            frame_threshold = threshold_function(blurred[frame_index])
+            thresholds_per_frame[frame_index] = frame_threshold
+            positive[frame_index] = blurred[frame_index] > frame_threshold
+            positive_labels[frame_index] = label(positive[frame_index]).astype(np.uint32)
+
+        result[channel_name] = {
             "blurred": blurred,
-            "thresh": thresh,
+            "thresholds_per_frame": thresholds_per_frame,
             "positive": positive,
             "positive_labels": positive_labels,
         }
     return result
+
+
+def compute_cell_positivity(linked_labels, pos_label_imgs, fluorophore_names):
+    """Map fluorescence blobs to tracked cells for every frame & channel.
+    Uses assign_positive_objects_to_cells (COM-based) to decide which
+    of the identified cells each fluorescence-positive blob belongs to.
+
+    Parameters
+    ----------
+    linked_labels : ndarray (n_frames, H, W), uint32
+        Tracked cell segmentation from TrackMate.
+    pos_label_imgs : dict[str, ndarray]
+        {fluorophore_name: (n_frames, H, W) uint32 labels}
+        from segment_fluorescence().
+    fluorophore_names : list[str]
+        Names matching the keys in pos_label_imgs.
+
+    Returns
+    -------
+    frame_cell_pos : dict[str, dict[int, dict[int, int]]]
+        Nested lookup: frame_cell_pos[fluorophore][frame_index][cell_id]
+        → positive pixel area assigned to that cell in that frame.
+        e.g. frame_cell_pos["Red"][5][42] → 187 means cell #42 in frame 5 had 187 pixels of Red fluorescence assigned to it.
+        For each fluorophore in each frame, we find every fluorescence-positive blob, determine which cell it belongs to
+        (if any), and sum the total positive area assigned to each cell.
+    positive_cell_labels : dict[str, ndarray]
+        {fluorophore: (n_frames, H, W) uint32} — label images where only
+        positive cells are painted with their cell ID, everything else 0.
+    """
+    num_frames = linked_labels.shape[0]
+    frame_cell_pos = {}
+    positive_cell_labels = {}
+    for fluorophore_name in fluorophore_names:
+        frame_cell_pos[fluorophore_name] = {}
+        output_labels = np.zeros_like(linked_labels)
+        for frame_index in range(num_frames):
+            cell_positivity = assign_positive_objects_to_cells(
+                pos_label_imgs[fluorophore_name][frame_index],
+                linked_labels[frame_index],
+            )
+            frame_cell_pos[fluorophore_name][frame_index] = cell_positivity
+            positive_ids = np.array(list(cell_positivity.keys()), dtype=np.uint32)
+            if len(positive_ids) > 0:
+                is_positive = np.isin(linked_labels[frame_index], positive_ids)
+                output_labels[frame_index] = np.where(is_positive, linked_labels[frame_index], 0)
+        positive_cell_labels[fluorophore_name] = output_labels
+    return frame_cell_pos, positive_cell_labels
 
 
 def generate_trackmate_labels(
@@ -509,173 +617,265 @@ def generate_trackmate_labels(
 #  Fate assignment
 # ---------------------------------------------------------------------------
 
-def assign_persistent_fates(linked_labels, positive_masks):
-    """Persistent mode: fate = whichever fluorophore appears FIRST."""
-    for name, mask in positive_masks.items():
-        if linked_labels.shape != mask.shape:
-            raise ValueError(
-                f"Shape mismatch: linked_labels {linked_labels.shape} "
-                f"vs {name} {mask.shape}"
-            )
+def assign_persistent_fates(linked_labels, frame_cell_pos):
+    """Assign each cell a permanent fate based on whichever fluorophore it
+    becomes positive for FIRST (irreversible / "once dead, stays dead").
 
-    n_frames = linked_labels.shape[0]
-    label_ids = np.unique(linked_labels)
-    label_ids = label_ids[label_ids > 0]
-    fluor_names = list(positive_masks.keys())
+    Logic per cell:
+      - Walk through all frames; record the first frame where each
+        fluorophore has a positive blob assigned to that cell.
+      - The fluorophore with the earliest first-positive frame wins
+        and becomes that cell's "fate" (e.g. "Red" or "Green").
+      - Cells that never become positive for anything get fate="negative".
 
-    rows = []
+    This is appropriate for markers like Annexin V / PI where positivity
+    indicates a one-way biological transition (apoptosis, necrosis).
+
+    Parameters
+    ----------
+    linked_labels : ndarray (n_frames, H, W), uint32
+        Tracked cell segmentation.
+    frame_cell_pos : dict[str, dict[int, dict[int, int]]]
+        Precomputed COM-based assignments from compute_cell_positivity().
+
+    Returns
+    -------
+    fates_dataframe : DataFrame
+        One row per cell with columns: label_id, mean_area, mean_roundness,
+        first_<fluor>_frame (per channel), <fluor>_positive_area (total),
+        first_positive_frame, and fate.
+    locked_labels : dict[str, ndarray]
+        {fluorophore: (n_frames, H, W) uint32} — label images containing
+        only cells assigned to that fate (for Napari overlays).
+    per_frame_dataframe : DataFrame
+        Long-format table with one row per (cell, frame) — includes area,
+        roundness, per-fluorophore positive area, and the cell's fate.
+    """
+    num_frames = linked_labels.shape[0]
+    fluor_names = list(frame_cell_pos.keys())
+
+    # Batch-measure all cells in every frame (one regionprops call per frame)
+    frame_measurements = {}
+    for frame_index in range(num_frames):
+        frame_measurements[frame_index] = measure_all_cells_in_frame(linked_labels[frame_index])
+
+    # Collect all unique cell IDs across all frames
+    all_label_ids = set()
+    for frame_index in range(num_frames):
+        all_label_ids.update(frame_measurements[frame_index].keys())
+    all_label_ids = sorted(all_label_ids)
+
+    # Build per-cell summaries and per-frame records
+    summary_rows = []
     frame_rows = []
-    for label_id in label_ids:
-        first_frames = {fn: None for fn in fluor_names}
-        area_counts = {fn: 0 for fn in fluor_names}
+    for label_id in all_label_ids:
+        first_frames = {fluorophore_name: None for fluorophore_name in fluor_names}
+        area_counts = {fluorophore_name: 0 for fluorophore_name in fluor_names}
         cell_areas = []
         cell_roundnesses = []
-        for frame in range(n_frames):
-            cell = linked_labels[frame] == label_id
-            if not np.any(cell):
+        for frame_index in range(num_frames):
+            if label_id not in frame_measurements[frame_index]:
                 continue
-            area, roundness = _measure_cell_shape(cell)
+            area, roundness = frame_measurements[frame_index][label_id]
             cell_areas.append(area)
             cell_roundnesses.append(roundness)
-            fr = {"label_id": int(label_id), "frame": frame,
-                  "area": area, "roundness": roundness}
-            for fn in fluor_names:
-                pos_count = int(np.count_nonzero(
-                    positive_masks[fn][frame] & cell
-                ))
-                area_counts[fn] += pos_count
-                fr[f"{fn}_positive_area"] = pos_count
-                if first_frames[fn] is None and pos_count > 0:
-                    first_frames[fn] = frame
-            frame_rows.append(fr)
+            frame_record = {"label_id": label_id, "frame": frame_index, "area": area, "roundness": roundness}
+            for fluorophore_name in fluor_names:
+                positive_count = frame_cell_pos[fluorophore_name][frame_index].get(label_id, 0)
+                area_counts[fluorophore_name] += positive_count
+                frame_record[f"{fluorophore_name}_positive_area"] = positive_count
+                if first_frames[fluorophore_name] is None and positive_count > 0:
+                    first_frames[fluorophore_name] = frame_index
+            frame_rows.append(frame_record)
 
-        fate, first_positive = "negative", np.nan
-        best = n_frames + 1
-        for fn in fluor_names:
-            ff = first_frames[fn]
-            if ff is not None and ff < best:
-                best, fate, first_positive = ff, fn, ff
+        # Determine fate: whichever fluorophore appeared first
+        fate = "negative"
+        first_positive = np.nan
+        earliest_frame = num_frames + 1
+        for fluorophore_name in fluor_names:
+            first_fluorophore_frame = first_frames[fluorophore_name]
+            if first_fluorophore_frame is not None and first_fluorophore_frame < earliest_frame:
+                earliest_frame = first_fluorophore_frame
+                fate = fluorophore_name
+                first_positive = first_fluorophore_frame
 
-        row = {"label_id": int(label_id)}
-        row["mean_area"] = float(np.mean(cell_areas)) if cell_areas else np.nan
-        row["mean_roundness"] = float(np.nanmean(cell_roundnesses)) if cell_roundnesses else np.nan
-        for fn in fluor_names:
-            row[f"first_{fn}_frame"] = (
-                first_frames[fn] if first_frames[fn] is not None else np.nan
-            )
-            row[f"{fn}_positive_area"] = area_counts[fn]
-        row["first_positive_frame"] = first_positive
-        row["fate"] = fate
-        rows.append(row)
+        cell_row = {"label_id": label_id}
+        cell_row["mean_area"] = float(np.mean(cell_areas)) if cell_areas else np.nan
+        cell_row["mean_roundness"] = (float(np.nanmean(cell_roundnesses)) if cell_roundnesses else np.nan)
+        for fluorophore_name in fluor_names:
+            cell_row[f"first_{fluorophore_name}_frame"] = (
+                first_frames[fluorophore_name]
+                if first_frames[fluorophore_name] is not None else np.nan)
+            cell_row[f"{fluorophore_name}_positive_area"] = area_counts[fluorophore_name]
+        cell_row["first_positive_frame"] = first_positive
+        cell_row["fate"] = fate
+        summary_rows.append(cell_row)
 
-    df = (
-        pd.DataFrame(rows)
-        .sort_values(["fate", "first_positive_frame", "label_id"])
-        .reset_index(drop=True)
-    )
+    fates_dataframe = (
+        pd.DataFrame(summary_rows)
+        .sort_values(["fate", "first_positive_frame", "label_id"]).reset_index(drop=True))
 
-    locked = {}
-    for fn in fluor_names:
-        ids = df.loc[df["fate"] == fn, "label_id"].to_numpy(dtype=np.uint32)
-        locked[fn] = np.where(
-            np.isin(linked_labels, ids), linked_labels, 0
+    # Build locked label images (only cells assigned to each fate)
+    locked_labels = {}
+    for fluorophore_name in fluor_names:
+        fate_cell_ids = fates_dataframe.loc[
+            fates_dataframe["fate"] == fluorophore_name, "label_id"
+        ].to_numpy(dtype=np.uint32)
+        locked_labels[fluorophore_name] = np.where(
+            np.isin(linked_labels, fate_cell_ids), linked_labels, 0
         ).astype(np.uint32)
 
-    # Build per-frame DataFrame and merge fate from summary
-    per_frame_df = pd.DataFrame(frame_rows)
-    if len(per_frame_df) > 0:
-        fate_map = df.set_index("label_id")["fate"]
-        per_frame_df["fate"] = per_frame_df["label_id"].map(fate_map)
-        per_frame_df = per_frame_df.sort_values(
-            ["label_id", "frame"]
-        ).reset_index(drop=True)
+    per_frame_dataframe = pd.DataFrame(frame_rows)
+    if len(per_frame_dataframe) > 0:
+        fate_map = fates_dataframe.set_index("label_id")["fate"]
+        per_frame_dataframe["fate"] = per_frame_dataframe["label_id"].map(fate_map)
+        per_frame_dataframe = per_frame_dataframe.sort_values(["label_id", "frame"]).reset_index(drop=True)
 
-    return df, locked, per_frame_df
+    return fates_dataframe, locked_labels, per_frame_dataframe
 
 
-def assign_snapshot_fates(linked_labels, positive_masks):
-    """Snapshot mode: per-frame classification by active fluorophores."""
-    for name, mask in positive_masks.items():
-        if linked_labels.shape != mask.shape:
-            raise ValueError(
-                f"Shape mismatch: linked_labels {linked_labels.shape} "
-                f"vs {name} {mask.shape}"
+def assign_snapshot_fates(linked_labels, frame_cell_pos):
+    """Classify each cell independently in every frame (no memory across time).
+
+    Unlike persistent mode, a cell can switch categories between frames.
+    The category is built by joining the names of all fluorophores the cell
+    is positive for in that frame with "+". Examples:
+      - Positive for Red only       → "Red"
+      - Positive for Red AND Green  → "Red+Green"
+      - Positive for nothing        → "negative"
+
+    Uses batch regionprops (measure_all_cells_in_frame) so cell shape is
+    measured once per frame for ALL cells, not once per cell per frame.
+
+    Parameters
+    ----------
+    linked_labels : ndarray (n_frames, H, W), uint32
+        Tracked cell segmentation.
+    frame_cell_pos : dict[str, dict[int, dict[int, int]]]
+        Precomputed COM-based assignments from compute_cell_positivity().
+
+    Returns
+    -------
+    DataFrame
+        One row per (cell, frame) with columns: label_id, frame, area,
+        roundness, one bool column per fluorophore, <fluor>_positive_area,
+        and category (the "+"-joined string).
+    """
+    fluor_names = list(frame_cell_pos.keys())
+    snapshot_rows = []
+    for frame_index in range(linked_labels.shape[0]):
+        cell_shapes = measure_all_cells_in_frame(linked_labels[frame_index])
+        for label_id, (area, roundness) in cell_shapes.items():
+            is_positive = {
+                fluorophore_name: frame_cell_pos[fluorophore_name][frame_index].get(label_id, 0) > 0
+                for fluorophore_name in fluor_names}
+            category = (
+                "+".join(fluorophore_name for fluorophore_name in fluor_names if is_positive[fluorophore_name])
+                or "negative"
             )
+            cell_frame_row = {"label_id": label_id, "frame": frame_index, "area": area, "roundness": roundness}
+            cell_frame_row.update(is_positive)
+            for fluorophore_name in fluor_names:
+                cell_frame_row[f"{fluorophore_name}_positive_area"] = (
+                    frame_cell_pos[fluorophore_name][frame_index].get(label_id, 0)
+                )
+            cell_frame_row["category"] = category
+            snapshot_rows.append(cell_frame_row)
 
-    fluor_names = list(positive_masks.keys())
-    rows = []
-    for frame in range(linked_labels.shape[0]):
-        fl = linked_labels[frame]
-        for lid in np.unique(fl):
-            if lid == 0:
-                continue
-            cell = fl == lid
-            area, roundness = _measure_cell_shape(cell)
-            active = {
-                fn: bool(np.any(positive_masks[fn][frame] & cell))
-                for fn in fluor_names
-            }
-            cat = "+".join(fn for fn in fluor_names if active[fn]) or "negative"
-            row = {"label_id": int(lid), "frame": frame,
-                   "area": area, "roundness": roundness}
-            row.update(active)
-            for fn in fluor_names:
-                row[f"{fn}_positive_area"] = int(np.count_nonzero(
-                    positive_masks[fn][frame] & cell
-                ))
-            row["category"] = cat
-            rows.append(row)
-
-    return pd.DataFrame(rows)
+    return pd.DataFrame(snapshot_rows)
 
 
 # ---------------------------------------------------------------------------
-#  Percentages & plots
+#  Percentages, filtering, and plotting
 # ---------------------------------------------------------------------------
 
-def compute_persistent_percentages(assignments_df, n_frames, fluor_names):
-    n = len(assignments_df)
-    if n == 0:
+def compute_persistent_percentages(assignments_df, num_frames, fluor_names):
+    """Build a time-series of cumulative % positive cells (persistent mode).
+
+    For each frame f, counts how many cells have fate == fluorophore AND
+    first_positive_frame <= f, then divides by total cell count.
+    Because fates are permanent, these curves can only go up over time.
+
+    Parameters
+    ----------
+    assignments_df : DataFrame
+        Output of assign_persistent_fates() — one row per cell.
+    num_frames : int
+        Total number of frames in the time-lapse.
+    fluor_names : list[str]
+        Fluorophore names to compute percentages for.
+
+    Returns
+    -------
+    DataFrame
+        Columns: frame, <fluor>_pct (one per channel), total_positive_pct.
+    """
+    total_cells = len(assignments_df)
+    if total_cells == 0:
         raise ValueError("No tracked cells.")
-    data = {"frame": np.arange(n_frames)}
-    for fn in fluor_names:
-        pcts = []
-        for f in range(n_frames):
-            c = (
-                (assignments_df["fate"] == fn)
-                & (assignments_df["first_positive_frame"] <= f)
-            ).sum()
-            pcts.append(100.0 * c / n)
-        data[f"{fn}_pct"] = pcts
-    data["total_positive_pct"] = [
-        sum(data[f"{fn}_pct"][f] for fn in fluor_names) for f in range(n_frames)
-    ]
+
+    frames = np.arange(num_frames)
+    data = {"frame": frames}
+    total_positive = np.zeros(num_frames)
+
+    for fluorophore_name in fluor_names:
+        fate_cells = assignments_df.loc[
+            assignments_df["fate"] == fluorophore_name, "first_positive_frame"
+        ].dropna().to_numpy()
+        # For each frame, count how many cells became positive at or before it
+        cumulative_counts = np.array([np.sum(fate_cells <= frame_index) for frame_index in frames])
+        percentages = 100.0 * cumulative_counts / total_cells
+        data[f"{fluorophore_name}_pct"] = percentages
+        total_positive += percentages
+
+    data["total_positive_pct"] = total_positive
     return pd.DataFrame(data)
 
 
-def compute_snapshot_percentages(snapshot_df, n_frames):
-    cats = sorted(
-        snapshot_df["category"].unique(),
-        key=lambda c: (c == "negative", c),
-    )
-    data = {"frame": np.arange(n_frames)}
-    for cat in cats:
-        pcts = []
-        for f in range(n_frames):
-            fd = snapshot_df[snapshot_df["frame"] == f]
-            nt = len(fd)
-            pcts.append(
-                100.0 * (fd["category"] == cat).sum() / nt if nt > 0 else 0.0
-            )
-        data[f"{cat}_pct"] = pcts
-    return pd.DataFrame(data), cats
+def compute_snapshot_percentages(snapshot_df, num_frames):
+    """Build a time-series of % cells in each category (snapshot mode).
+
+    Unlike persistent percentages, these can go up or down because a
+    cell can change category between frames.
+
+    Parameters
+    ----------
+    snapshot_df : DataFrame
+        Output of assign_snapshot_fates() — one row per (cell, frame).
+    num_frames : int
+        Total number of frames in the time-lapse.
+
+    Returns
+    -------
+    summary_df : DataFrame
+        Columns: frame, <category>_pct for each unique category.
+    categories : list[str]
+        Sorted list of category names (positive categories first,
+        "negative" last).
+    """
+    # Sort out all the possible categories for consistent ordering in outputs. "Negative" always comes last
+    categories = sorted(snapshot_df["category"].unique(), key=lambda category: (category == "negative", category))
+
+    # Pivot: count cells per (frame, category), then divide by total per frame
+    counts = snapshot_df.groupby(["frame", "category"]).size().unstack(fill_value=0)
+    totals_per_frame = counts.sum(axis=1)
+    percentages = counts.div(totals_per_frame, axis=0) * 100.0
+
+    # Reindex to cover all frames (fills missing frames with 0)
+    percentages = percentages.reindex(range(num_frames), fill_value=0.0)
+
+    data = {"frame": np.arange(num_frames)}
+    for category in categories:
+        data[f"{category}_pct"] = (
+            percentages[category].values if category in percentages.columns
+            else np.zeros(num_frames)
+        )
+    return pd.DataFrame(data), categories
 
 
-# ---------------------------------------------------------------------------
-#  Colour inference from fluorophore names
-# ---------------------------------------------------------------------------
+# --- Colour inference ---
 
-_COLOUR_KEYWORDS: Dict[str, dict] = {
+COLOUR_KEYWORDS: Dict[str, dict] = {
     "red":     {"mpl": "tab:red",    "napari": "red",     "rgb": (1.0, 0.0, 0.0)},
     "green":   {"mpl": "tab:green",  "napari": "green",   "rgb": (0.0, 0.8, 0.0)},
     "blue":    {"mpl": "tab:blue",   "napari": "blue",    "rgb": (0.2, 0.4, 1.0)},
@@ -684,104 +884,249 @@ _COLOUR_KEYWORDS: Dict[str, dict] = {
     "magenta": {"mpl": "tab:pink",   "napari": "magenta", "rgb": (0.9, 0.0, 0.6)},
 }
 
-_FALLBACK_COLOURS = [
-    {"mpl": "tab:red",    "napari": "red",   "rgb": (1.0, 0.0, 0.0)},
-    {"mpl": "tab:green",  "napari": "green", "rgb": (0.0, 0.8, 0.0)},
-    {"mpl": "tab:blue",   "napari": "blue",  "rgb": (0.2, 0.4, 1.0)},
-    {"mpl": "tab:orange", "napari": "gray",  "rgb": (1.0, 0.5, 0.0)},
-    {"mpl": "tab:purple", "napari": "gray",  "rgb": (0.5, 0.0, 0.8)},
-]
+def assign_colours(names):
+    """Assign plot colours to a list of fluorophore/category names.
+
+    Names containing a colour keyword (e.g. "Red", "Green") get that
+    colour. Combined-positive cells (e.g. "Red+Green") get the average of their components' colours.
+    Unknown names get assigned unused colours from the palette in order.
+
+    Parameters
+    ----------
+    names : list[str]
+        Fluorophore or category names.
+
+    Returns
+    -------
+    dict[str, dict]
+        {name: {"mpl": ..., "napari": ..., "rgb": ...}} for each input name.
+    """
+    all_colour_entries = list(COLOUR_KEYWORDS.values())
+    result = {}
+    used_palette_indices = set()
+
+    # First pass: keyword matches
+    for name in names:
+        lowercase_name = name.lower()
+        for palette_index, (keyword, entry) in enumerate(COLOUR_KEYWORDS.items()):
+            if keyword in lowercase_name:
+                result[name] = entry
+                used_palette_indices.add(palette_index)
+                break
+
+    # Second pass: assign unused colours to unmatched names
+    available_indices = [i for i in range(len(all_colour_entries)) if i not in used_palette_indices]
+    fallback_counter = 0
+    for name in names:
+        if name not in result:
+            if available_indices:
+                result[name] = all_colour_entries[available_indices[fallback_counter % len(available_indices)]]
+            else:
+                result[name] = all_colour_entries[fallback_counter % len(all_colour_entries)]
+            fallback_counter += 1
+
+    return result
 
 
-def _infer_colour(name: str, index: int = 0) -> dict:
-    """Return {"mpl", "napari", "rgb"} colour mapping for a fluorophore name."""
-    low = name.lower()
-    for kw, entry in _COLOUR_KEYWORDS.items():
-        if kw in low:
-            return entry
-    return _FALLBACK_COLOURS[index % len(_FALLBACK_COLOURS)]
+def build_category_colormap(categories):
+    """Build an RGB colour mapping for snapshot categories.
+
+    Single-fluorophore categories get their inferred colour directly.
+    Compound categories like "Red+Green" get the mean of their component
+    colours (clamped to [0, 1]). "negative" is always grey.
+
+    Parameters
+    ----------
+    categories : list[str]
+        Category names, e.g. ["Red", "Green", "Red+Green", "negative"].
+
+    Returns
+    -------
+    dict[str, tuple[float, float, float]]
+        {category_name: (R, G, B)} with values in 0-1 range.
+    """
+    single_fluorophores = []
+    for category in categories:
+        if category == "negative":
+            continue
+        for part in category.split("+"):
+            if part not in single_fluorophores:
+                single_fluorophores.append(part)
+    colour_assignments = assign_colours(single_fluorophores)
+    single_rgb = {name: np.array(colour_assignments[name]["rgb"]) for name in single_fluorophores}
+    colormap = {}
+    for category in categories:
+        if category == "negative":
+            colormap[category] = (0.7, 0.7, 0.7)
+            continue
+        parts = category.split("+")
+        rgb = np.clip(np.mean([single_rgb.get(part, np.array([0.5, 0.5, 0.5])) for part in parts], axis=0), 0, 1)
+        colormap[category] = tuple(rgb.tolist())
+    return colormap
 
 
-# ---------------------------------------------------------------------------
+# --- Plotting ---
 
+def plot_persistent_percentages(summary_df, fluor_names, title="Persistent positive cells over time"):
+    """Line plot of cumulative % positive cells over frames (persistent mode).
 
-def plot_persistent_percentages(
-    summary_df, fluor_names, title="Persistent positive cells over time"
-):
+    Each fluorophore gets its own coloured line, plus a black "Total" line
+    summing all fates. Y-axis is fixed 0-100%.
+
+    Parameters
+    ----------
+    summary_df : DataFrame
+        Output of compute_persistent_percentages().
+    fluor_names : list[str]
+        Fluorophore names (must match <name>_pct columns in summary_df).
+    title : str
+        Plot title.
+
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes.
+    """
     fig, ax = plt.subplots(figsize=(8, 4))
-    for i, fn in enumerate(fluor_names):
-        c = _infer_colour(fn, i)["mpl"]
-        sns.lineplot(
-            data=summary_df, x="frame", y=f"{fn}_pct",
-            color=c, label=fn, ax=ax,
-        )
-    sns.lineplot(
-        data=summary_df, x="frame", y="total_positive_pct",
-        color="black", label="Total", ax=ax,
-    )
+    colour_assignments = assign_colours(fluor_names)
+    for fluorophore_name in fluor_names:
+        colour = colour_assignments[fluorophore_name]["mpl"]
+        sns.lineplot(data=summary_df, x="frame", y=f"{fluorophore_name}_pct",
+                     color=colour, label=fluorophore_name, ax=ax)
+    sns.lineplot(data=summary_df, x="frame", y="total_positive_pct",
+                 color="black", label="Total", ax=ax)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.set(xlabel="Frame", ylabel="% Cells", ylim=(0, 100), title=title)
     plt.tight_layout()
     return fig, ax
 
 
-def plot_snapshot_percentages(
-    summary_df, categories, title="Per-frame categories over time"
-):
+def plot_snapshot_percentages(summary_df, categories, title="Per-frame categories over time"):
+    """Line plot of % cells per category over frames (snapshot mode).
+
+    Each category gets a colour derived from build_category_colormap.
+    Unlike persistent plots, lines can go up and down.
+
+    Parameters
+    ----------
+    summary_df : DataFrame
+        Output of compute_snapshot_percentages().
+    categories : list[str]
+        Category names (must match <cat>_pct columns in summary_df).
+    title : str
+        Plot title.
+
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes.
+    """
     fig, ax = plt.subplots(figsize=(8, 4))
-    cat_cmap = _build_category_colormap(categories)
-    for cat in categories:
-        c = cat_cmap.get(cat, (0.5, 0.5, 0.5))
-        sns.lineplot(
-            data=summary_df, x="frame", y=f"{cat}_pct",
-            color=c, label=cat, ax=ax,
-        )
+    category_colormap = build_category_colormap(categories)
+    for category in categories:
+        colour = category_colormap.get(category, (0.5, 0.5, 0.5))
+        sns.lineplot(data=summary_df, x="frame", y=f"{category}_pct",
+                     color=colour, label=category, ax=ax)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.set(xlabel="Frame", ylabel="% Cells", ylim=(0, 100), title=title)
     plt.tight_layout()
     return fig, ax
 
 
-def _filter_by_frame_presence(tracks_df, snapshot_df, n_frames, min_pct):
-    """Keep only cells appearing in >= min_pct% of frames."""
-    threshold = n_frames * min_pct / 100.0
+# --- Filtering ---
+
+def filter_by_frame_presence(tracks_df, snapshot_df, num_frames, min_pct):
+    """Remove cells that appear in too few frames (snapshot mode).
+
+    Cells that are only tracked for a small fraction of the time-lapse
+    are often segmentation artefacts or cells entering/leaving the FOV.
+    This filter keeps only cells present in >= min_pct% of frames.
+    Also filters the matching tracks_df rows (track_id = label_id - 1).
+
+    Parameters
+    ----------
+    tracks_df : DataFrame or None
+        TrackMate tracks CSV (columns: track_id, t, x, y, ...).
+    snapshot_df : DataFrame
+        Output of assign_snapshot_fates().
+    num_frames : int
+        Total frames in the time-lapse.
+    min_pct : float
+        Minimum % of frames a cell must appear in to be kept (0-100).
+
+    Returns
+    -------
+    filtered_tracks : DataFrame
+        Filtered tracks (or original if tracks_df is None/empty).
+    filtered_snapshot : DataFrame
+        Filtered snapshot data.
+    """
+    min_frame_count = num_frames * min_pct / 100.0
     frame_counts = snapshot_df.groupby("label_id")["frame"].nunique()
-    keep_ids = frame_counts[frame_counts >= threshold].index
-    filt_snap = snapshot_df[snapshot_df["label_id"].isin(keep_ids)].copy()
+    keep_ids = frame_counts[frame_counts >= min_frame_count].index
+    filtered_snapshot = snapshot_df[snapshot_df["label_id"].isin(keep_ids)].copy()
     if tracks_df is not None and len(tracks_df) > 0:
         keep_track_ids = keep_ids.astype(int) - 1
-        filt_tracks = tracks_df[tracks_df["track_id"].isin(keep_track_ids)].copy()
+        filtered_tracks = tracks_df[tracks_df["track_id"].isin(keep_track_ids)].copy()
     else:
-        filt_tracks = tracks_df
-    return filt_tracks, filt_snap
+        filtered_tracks = tracks_df
+    return filtered_tracks, filtered_snapshot
 
 
-def _filter_persistent_by_frame_presence(
-    assignments_df, linked_labels, n_frames, min_pct
-):
-    """Keep only persistent cells appearing in >= min_pct% of frames."""
-    threshold = n_frames * min_pct / 100.0
-    all_ids = []
-    for frame in range(linked_labels.shape[0]):
-        ids = np.unique(linked_labels[frame])
-        ids = ids[ids > 0]
-        all_ids.extend(ids.tolist())
-    frame_counts = pd.Series(all_ids).value_counts()
-    keep_ids = frame_counts[frame_counts >= threshold].index
+def filter_persistent_by_frame_presence(assignments_df, linked_labels, num_frames, min_pct):
+    """Remove cells that appear in too few frames (persistent mode).
+
+    Same idea as filter_by_frame_presence, but works on the persistent
+    assignments table. Counts how many frames each cell_id actually
+    appears in the linked_labels stack (not just the summary table).
+
+    Parameters
+    ----------
+    assignments_df : DataFrame
+        Output of assign_persistent_fates().
+    linked_labels : ndarray (n_frames, H, W)
+        Tracked cell segmentation.
+    num_frames : int
+        Total frames in the time-lapse.
+    min_pct : float
+        Minimum % of frames a cell must appear in to be kept (0-100).
+
+    Returns
+    -------
+    DataFrame
+        Filtered copy of assignments_df.
+    """
+    min_frame_count = num_frames * min_pct / 100.0
+    frame_presence = {}
+    for frame_index in range(linked_labels.shape[0]):
+        for cell_id in np.unique(linked_labels[frame_index]):
+            if cell_id > 0:
+                frame_presence[cell_id] = frame_presence.get(cell_id, 0) + 1
+    keep_ids = [cid for cid, count in frame_presence.items() if count >= min_frame_count]
     return assignments_df[assignments_df["label_id"].isin(keep_ids)].copy()
 
 
-def plot_snapshot_trajectories(
-    tracks_df,
-    snapshot_df,
-    title="Snapshot trajectories by category",
-):
-    """Plot trajectories colored by per-frame snapshot category.
+# --- Trajectory & timeline plots ---
 
-    When ``tracks_df`` contains ``lineage_id`` and ``parent_track_id``
-    columns (from TrackMate splitting), dashed lines are drawn connecting
-    the last position of a mother cell to the first position of each
-    daughter, making division events visible.
+def plot_snapshot_trajectories(tracks_df, snapshot_df, title="Snapshot trajectories by category"):
+    """Plot cell XY trajectories coloured by snapshot category at each step.
+
+    Each cell's track is drawn as a series of line segments where each
+    segment is coloured according to the cell's category in that frame.
+    If lineage data is available (parent_track_id column), dashed lines
+    connect parent track endpoints to daughter track start points.
+
+    Parameters
+    ----------
+    tracks_df : DataFrame
+        TrackMate tracks with columns: track_id, t, x, y, and optionally
+        parent_track_id for lineage connections.
+    snapshot_df : DataFrame
+        Output of assign_snapshot_fates() — provides category per (label_id, frame).
+    title : str
+        Plot title.
+
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes.
     """
     if tracks_df is None or len(tracks_df) == 0:
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -792,260 +1137,161 @@ def plot_snapshot_trajectories(
         return fig, ax
 
     categories = sorted(snapshot_df["category"].unique())
-    color_map = _build_category_colormap(categories)
+    color_map = build_category_colormap(categories)
     if "negative" not in color_map:
         color_map["negative"] = (0.6, 0.6, 0.6)
 
-    pts = tracks_df.copy()
-    pts["frame"] = pts["t"].astype(int)
-    pts["label_id"] = pts["track_id"].astype(int) + 1
-
-    cat_map = snapshot_df[["label_id", "frame", "category"]].copy()
-    merged = pts.merge(cat_map, on=["label_id", "frame"], how="left")
-    merged["category"] = merged["category"].fillna("negative")
+    track_points = tracks_df.copy()
+    track_points["frame"] = track_points["t"].astype(int)
+    track_points["label_id"] = track_points["track_id"].astype(int) + 1
+    category_lookup = snapshot_df[["label_id", "frame", "category"]].copy()
+    merged_tracks = track_points.merge(category_lookup, on=["label_id", "frame"], how="left")
+    merged_tracks["category"] = merged_tracks["category"].fillna("negative")
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    all_x, all_y = [], []
-
-    for lid, tr in merged.groupby("label_id"):
-        tr = tr.sort_values("frame")
-        coords = tr[["x", "y"]].to_numpy(dtype=float)
-        if len(coords) < 2:
+    all_x_coords, all_y_coords = [], []
+    for label_id, track_group in merged_tracks.groupby("label_id"):
+        track_group = track_group.sort_values("frame")
+        coordinates = track_group[["x", "y"]].to_numpy(dtype=float)
+        if len(coordinates) < 2:
             continue
-        all_x.extend(coords[:, 0].tolist())
-        all_y.extend(coords[:, 1].tolist())
-        segments = np.stack([coords[:-1], coords[1:]], axis=1)
-        seg_colors = [
-            color_map.get(cat, (0.6, 0.6, 0.6))
-            for cat in tr["category"].iloc[:-1]
-        ]
-        lc = LineCollection(segments, colors=seg_colors, linewidths=1.5, alpha=0.85)
-        ax.add_collection(lc)
+        all_x_coords.extend(coordinates[:, 0].tolist())
+        all_y_coords.extend(coordinates[:, 1].tolist())
+        segments = np.stack([coordinates[:-1], coordinates[1:]], axis=1)
+        segment_colours = [color_map.get(cat, (0.6, 0.6, 0.6)) for cat in track_group["category"].iloc[:-1]]
+        ax.add_collection(LineCollection(segments, colors=segment_colours, linewidths=1.5, alpha=0.85))
 
-    # Draw division connectors (mother → daughter dashed lines)
     has_lineage = "parent_track_id" in tracks_df.columns
     if has_lineage:
-        # Build per-track first/last positions
         track_bounds = {}
-        for tid, grp in merged.groupby("track_id"):
-            grp = grp.sort_values("frame")
-            first = grp.iloc[0]
-            last = grp.iloc[-1]
-            track_bounds[int(tid)] = {
-                "first_xy": (float(first["x"]), float(first["y"])),
-                "last_xy": (float(last["x"]), float(last["y"])),
+        for track_id_val, group in merged_tracks.groupby("track_id"):
+            group = group.sort_values("frame")
+            track_bounds[int(track_id_val)] = {
+                "first_xy": (float(group.iloc[0]["x"]), float(group.iloc[0]["y"])),
+                "last_xy": (float(group.iloc[-1]["x"]), float(group.iloc[-1]["y"])),
             }
-        for tid, grp in merged.drop_duplicates("track_id").iterrows():
-            ptid = grp.get("parent_track_id")
-            if pd.isna(ptid):
+        for row_index, group in merged_tracks.drop_duplicates("track_id").iterrows():
+            parent_track_id_val = group.get("parent_track_id")
+            if pd.isna(parent_track_id_val):
                 continue
-            ptid = int(ptid)
-            child_tid = int(grp["track_id"])
-            if ptid in track_bounds and child_tid in track_bounds:
-                px, py = track_bounds[ptid]["last_xy"]
-                cx, cy = track_bounds[child_tid]["first_xy"]
-                ax.plot(
-                    [px, cx], [py, cy],
-                    color="black", linewidth=1.0, alpha=0.5,
-                    linestyle="--", zorder=0,
-                )
+            parent_track_id_val = int(parent_track_id_val)
+            child_track_id = int(group["track_id"])
+            if parent_track_id_val in track_bounds and child_track_id in track_bounds:
+                parent_x, parent_y = track_bounds[parent_track_id_val]["last_xy"]
+                child_x, child_y = track_bounds[child_track_id]["first_xy"]
+                ax.plot([parent_x, child_x], [parent_y, child_y],
+                        color="black", linewidth=1.0, alpha=0.5, linestyle="--", zorder=0)
 
-    if all_x and all_y:
-        ax.set_xlim(min(all_x) - 10, max(all_x) + 10)
-        ax.set_ylim(min(all_y) - 10, max(all_y) + 10)
+    if all_x_coords and all_y_coords:
+        ax.set_xlim(min(all_x_coords) - 10, max(all_x_coords) + 10)
+        ax.set_ylim(min(all_y_coords) - 10, max(all_y_coords) + 10)
     ax.invert_yaxis()
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_title(title)
-    ax.set_aspect("equal")
-
-    handles = [
-        plt.Line2D([0], [0], color=color_map[c], lw=2, label=c)
-        for c in sorted(color_map.keys())
-    ]
+    ax.set(xlabel="x", ylabel="y", title=title, aspect="equal")
+    handles = [plt.Line2D([0], [0], color=color_map[cat], lw=2, label=cat) for cat in sorted(color_map.keys())]
     ax.legend(handles=handles, title="Snapshot category", loc="best")
     plt.tight_layout()
     return fig, ax
 
 
-def _build_category_colormap(categories):
-    """Build a colour map for snapshot categories.
+def plot_snapshot_cell_timelines(snapshot_df, tracks_df=None, title="Cell status over time"):
+    """Horizontal bar chart showing each cell's category across all frames.
 
-    Single fluorophores are coloured by name inference (e.g. a name
-    containing 'red' gets red, 'green' gets green).  Combinations get
-    blended RGB values.  'negative' is always grey.
-    """
-    # Discover unique single-fluorophore names in the order they first appear
-    singles = []
-    for cat in categories:
-        if cat == "negative":
-            continue
-        for part in cat.split("+"):
-            if part not in singles:
-                singles.append(part)
+    Each row is a cell (Y-axis), each column is a frame (X-axis), and
+    the colour of each bar indicates the cell's snapshot category in that
+    frame. This gives an at-a-glance view of when cells transition.
 
-    # Map each single fluorophore to its inferred RGB
-    single_rgb = {
-        name: np.array(_infer_colour(name, i)["rgb"])
-        for i, name in enumerate(singles)
-    }
+    If lineage information is available (lineage_id, parent_track_id in
+    tracks_df), cells are sorted by lineage and dashed vertical lines
+    connect parent->daughter division events.
 
-    cmap = {}
-    for cat in categories:
-        if cat == "negative":
-            cmap[cat] = (0.7, 0.7, 0.7)
-            continue
-        parts = cat.split("+")
-        rgb = np.zeros(3)
-        for p in parts:
-            rgb += single_rgb.get(p, np.array([0.5, 0.5, 0.5]))
-        rgb = np.clip(rgb, 0, 1)
-        cmap[cat] = tuple(rgb.tolist())
-    return cmap
+    Parameters
+    ----------
+    snapshot_df : DataFrame
+        Output of assign_snapshot_fates().
+    tracks_df : DataFrame or None
+        TrackMate tracks CSV. If it contains lineage_id and
+        parent_track_id columns, lineage sorting and division lines are enabled.
+    title : str
+        Plot title.
 
-
-def plot_snapshot_cell_timelines(
-    snapshot_df,
-    tracks_df=None,
-    title="Cell status over time",
-):
-    """Swimlane / timeline plot showing each cell's category at every frame.
-
-    Each row is one tracked cell; the x-axis is frame (time).  Segments are
-    coloured by the cell's snapshot category at that frame, producing a
-    visual timeline of transitions (e.g. red → red+green → green for FUCCI).
-
-    When *tracks_df* contains ``lineage_id`` columns (from TrackMate splitting),
-    cells are sorted by lineage so that mother and daughter cells are grouped
-    together, and a vertical line marks the division frame.
-
-    Returns (fig, ax).
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes.
     """
     if snapshot_df is None or len(snapshot_df) == 0:
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.set_title(title)
-        ax.text(0.5, 0.5, "No snapshot data", ha="center", va="center",
-                transform=ax.transAxes)
+        ax.text(0.5, 0.5, "No snapshot data", ha="center", va="center", transform=ax.transAxes)
         ax.axis("off")
         plt.tight_layout()
         return fig, ax
 
     categories = sorted(snapshot_df["category"].unique())
-    color_map = _build_category_colormap(categories)
+    color_map = build_category_colormap(categories)
+    has_lineage = (tracks_df is not None and len(tracks_df) > 0 and "lineage_id" in tracks_df.columns)
 
-    # ------- lineage-aware ordering -------
-    has_lineage = (
-        tracks_df is not None
-        and len(tracks_df) > 0
-        and "lineage_id" in tracks_df.columns
-    )
     if has_lineage:
-        # Build label_id → lineage_id mapping
-        tdf = tracks_df.copy()
-        tdf["label_id"] = tdf["track_id"].astype(int) + 1
-        lin_map = tdf.drop_duplicates("label_id")[["label_id", "lineage_id", "parent_track_id"]]
-        lin_map = lin_map.set_index("label_id")
+        tracks_dataframe = tracks_df.copy()
+        tracks_dataframe["label_id"] = tracks_dataframe["track_id"].astype(int) + 1
+        lineage_map = tracks_dataframe.drop_duplicates("label_id")[["label_id", "lineage_id", "parent_track_id"]]
+        lineage_map = lineage_map.set_index("label_id")
 
-        present_ids = set(snapshot_df["label_id"].unique())
+        def lineage_sort_key(label_id):
+            lineage_id_string = lineage_map.loc[label_id, "lineage_id"] if label_id in lineage_map.index else str(label_id)
+            parts = str(lineage_id_string).split(".")
+            return tuple(int(part) if part.isdigit() else 0 for part in parts)
 
-        def _lineage_sort_key(lid):
-            """Sort key that groups families together.
-
-            Uses the root number + lineage suffix so e.g.
-            1, 1.1, 1.2, 2, 3, 3.1, 3.2 stay together.
-            """
-            lid_str = lin_map.loc[lid, "lineage_id"] if lid in lin_map.index else str(lid)
-            # Pad each numeric part for correct lexicographic sorting
-            parts = str(lid_str).split(".")
-            return tuple(int(p) if p.isdigit() else 0 for p in parts)
-
-        cell_ids = sorted(
-            [lid for lid in snapshot_df["label_id"].unique()],
-            key=_lineage_sort_key,
-        )
+        cell_ids = sorted(snapshot_df["label_id"].unique(), key=lineage_sort_key)
         label_display = {}
-        for lid in cell_ids:
-            if lid in lin_map.index:
-                label_display[lid] = str(lin_map.loc[lid, "lineage_id"])
-            else:
-                label_display[lid] = str(lid)
+        for label_id in cell_ids:
+            label_display[label_id] = str(lineage_map.loc[label_id, "lineage_id"]) if label_id in lineage_map.index else str(label_id)
     else:
         cell_ids = sorted(snapshot_df["label_id"].unique())
-        label_display = {lid: str(lid) for lid in cell_ids}
+        label_display = {label_id: str(label_id) for label_id in cell_ids}
 
-    n_cells = len(cell_ids)
-    cell_y = {cid: i for i, cid in enumerate(cell_ids)}
-
-    # Determine frame range
+    num_cells = len(cell_ids)
+    cell_y_position = {cell_id: index for index, cell_id in enumerate(cell_ids)}
     min_frame = int(snapshot_df["frame"].min())
     max_frame = int(snapshot_df["frame"].max())
 
-    height = max(3, min(n_cells * 0.25 + 1, 40))
+    height = max(3, min(num_cells * 0.25 + 1, 40))
     fig, ax = plt.subplots(figsize=(max(8, (max_frame - min_frame) * 0.15 + 2), height))
 
-    # Draw one coloured rectangle per cell per frame
-    for _, row in snapshot_df.iterrows():
-        lid = row["label_id"]
-        frame = int(row["frame"])
-        cat = row["category"]
-        colour = color_map.get(cat, (0.5, 0.5, 0.5))
-        y = cell_y[lid]
-        ax.barh(y, width=1, left=frame, height=0.8, color=colour,
-                edgecolor="none", linewidth=0)
+    for row_index, row in snapshot_df.iterrows():
+        colour = color_map.get(row["category"], (0.5, 0.5, 0.5))
+        ax.barh(cell_y_position[row["label_id"]], width=1, left=int(row["frame"]),
+                height=0.8, color=colour, edgecolor="none", linewidth=0)
 
-    # ------- draw division connectors -------
     if has_lineage:
-        # For each daughter, draw a line from where the parent row ends
-        # to where the daughter row begins
-        for lid in cell_ids:
-            if lid not in lin_map.index:
+        for label_id in cell_ids:
+            if label_id not in lineage_map.index:
                 continue
-            parent_tid = lin_map.loc[lid, "parent_track_id"]
-            if pd.isna(parent_tid):
+            parent_track_id_val = lineage_map.loc[label_id, "parent_track_id"]
+            if pd.isna(parent_track_id_val):
                 continue
-            parent_lid = int(parent_tid) + 1
-            if parent_lid not in cell_y:
+            parent_label_id = int(parent_track_id_val) + 1
+            if parent_label_id not in cell_y_position:
                 continue
-            # Find the frame where the daughter first appears
-            daughter_frames = snapshot_df.loc[
-                snapshot_df["label_id"] == lid, "frame"
-            ]
+            daughter_frames = snapshot_df.loc[snapshot_df["label_id"] == label_id, "frame"]
             if len(daughter_frames) == 0:
                 continue
-            div_frame = int(daughter_frames.min())
-            y_parent = cell_y[parent_lid]
-            y_daughter = cell_y[lid]
-            ax.plot(
-                [div_frame, div_frame],
-                [y_parent, y_daughter],
-                color="black", linewidth=0.8, alpha=0.6,
-                linestyle="--",
-            )
+            division_frame = int(daughter_frames.min())
+            ax.plot([division_frame, division_frame],
+                    [cell_y_position[parent_label_id], cell_y_position[label_id]],
+                    color="black", linewidth=0.8, alpha=0.6, linestyle="--")
 
     ax.set_xlim(min_frame - 0.5, max_frame + 1.5)
-    ax.set_ylim(-0.5, n_cells - 0.5)
+    ax.set_ylim(-0.5, num_cells - 0.5)
     ax.set_xlabel("Frame", fontsize=11)
     ax.set_ylabel("Cell (lineage ID)" if has_lineage else "Cell", fontsize=11)
     ax.set_title(title, fontsize=12)
-
-    # Thin y-tick labels only when there are few cells
-    if n_cells <= 60:
-        ax.set_yticks(range(n_cells))
-        ax.set_yticklabels(
-            [label_display[c] for c in cell_ids],
-            fontsize=max(4, 8 - n_cells // 20),
-        )
+    if num_cells <= 60:
+        ax.set_yticks(range(num_cells))
+        ax.set_yticklabels([label_display[cell_id] for cell_id in cell_ids], fontsize=max(4, 8 - num_cells // 20))
     else:
         ax.set_yticks([])
-
-    # Legend
-    handles = [
-        Patch(facecolor=color_map[c], edgecolor="none", label=c)
-        for c in categories
-    ]
-    ax.legend(handles=handles, title="Category", loc="upper right",
-              fontsize=8, title_fontsize=9, framealpha=0.8)
-
+    handles = [Patch(facecolor=color_map[cat], edgecolor="none", label=cat) for cat in categories]
+    ax.legend(handles=handles, title="Category", loc="upper right", fontsize=8, title_fontsize=9, framealpha=0.8)
     fig.tight_layout()
     return fig, ax
 
@@ -1551,8 +1797,10 @@ class CellDeathAnalysisApp:
         fl_out = segment_fluorescence(
             fluor_images, blur_sigma=blur_sigma, threshold_method=thresh_map
         )
-        pos_masks = {fn: fl_out[fn]["positive"] for fn in fluor_names}
-        pos_labels = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
+        pos_label_imgs = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
+        frame_cell_pos, positive_cell_labels = compute_cell_positivity(
+            linked_labels, pos_label_imgs, fluor_names
+        )
 
         self._set_progress(45, fmt=f"Assigning fates ({mode})...")
         self._append_log(f"Assigning fates (mode={mode})...")
@@ -1577,7 +1825,7 @@ class CellDeathAnalysisApp:
 
         if mode == "persistent":
             assignments_df, locked_labels, persistent_per_frame = assign_persistent_fates(
-                linked_labels, pos_masks,
+                linked_labels, frame_cell_pos,
             )
             assignments_df = assignments_df.sort_values("label_id").reset_index(
                 drop=True
@@ -1605,7 +1853,7 @@ class CellDeathAnalysisApp:
             )
         else:
             snapshot_df = assign_snapshot_fates(
-                linked_labels, pos_masks,
+                linked_labels, frame_cell_pos,
             )
             snapshot_df = snapshot_df.sort_values(
                 ["label_id", "frame"]
@@ -1676,7 +1924,7 @@ class CellDeathAnalysisApp:
 
             cutoff_pcts = [30, 40, 50, 60]
             for cutoff in cutoff_pcts:
-                filt_df = _filter_persistent_by_frame_presence(
+                filt_df = filter_persistent_by_frame_presence(
                     assignments_df, linked_labels, n_fr, cutoff
                 )
                 n_cells = len(filt_df)
@@ -1716,7 +1964,7 @@ class CellDeathAnalysisApp:
 
             cutoff_pcts = [30, 40, 50, 60]
             for cutoff in cutoff_pcts:
-                ft, fs = _filter_by_frame_presence(
+                ft, fs = filter_by_frame_presence(
                     tracks_for_plot, snapshot_df, n_fr, cutoff
                 )
                 n_cells = fs["label_id"].nunique() if len(fs) > 0 else 0
@@ -1814,7 +2062,7 @@ class CellDeathAnalysisApp:
             if (work_dir / "masks_stack.tiff").exists()
             else np.zeros_like(linked_labels, dtype=np.uint16),
             "linked_labels": linked_labels,
-            "pos_labels": pos_labels,
+            "positive_cell_labels": positive_cell_labels,
             "locked_labels": locked_labels,
             "tracks_df": tracks_df,
             "mode": mode,
@@ -1835,7 +2083,7 @@ class CellDeathAnalysisApp:
                     "linked_labels": np.zeros_like(
                         out["masks_stack"], dtype=np.uint32
                     ),
-                    "pos_labels": {},
+                    "positive_cell_labels": {},
                     "locked_labels": None,
                     "tracks_df": pd.DataFrame(
                         columns=["track_id", "t", "y", "x", "quality"]
@@ -1868,7 +2116,7 @@ class CellDeathAnalysisApp:
                     "fluor_images": fluor_images,
                     "masks_stack": masks_stack,
                     "linked_labels": out["linked_labels"],
-                    "pos_labels": {},
+                    "positive_cell_labels": {},
                     "locked_labels": None,
                     "tracks_df": out["tracks_df"],
                     "mode": "snapshot",
@@ -1954,16 +2202,17 @@ class CellDeathAnalysisApp:
             opacity=0.7,
         )
 
-        for i, (fn, img) in enumerate(data["fluor_images"].items()):
-            cmap = _infer_colour(fn, i)["napari"]
+        colour_assignments = assign_colours(list(data["fluor_images"].keys()))
+        for fn, img in data["fluor_images"].items():
+            napari_cmap = colour_assignments[fn]["napari"]
             self.viewer.add_image(
                 img, name=f"{fn} fluorescence",
-                colormap=cmap, blending="additive",
+                colormap=napari_cmap, blending="additive",
             )
 
-        for fn, lbl in data["pos_labels"].items():
+        for fn, lbl in data["positive_cell_labels"].items():
             self.viewer.add_labels(
-                lbl, name=f"{fn} positive", opacity=0.35
+                lbl, name=f"{fn} positive cells", opacity=0.35
             )
 
         self.viewer.add_labels(
