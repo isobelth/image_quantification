@@ -5,9 +5,8 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - pytorch
-  - torchvision
-  - pytorch-cuda=12.4
+
+  # ---------- core scientific stack ----------
   - numpy
   - pandas
   - scipy
@@ -15,14 +14,35 @@ dependencies:
   - matplotlib
   - seaborn
   - tifffile
+  - imageio
+
+  # ---------- napari + GUI ----------
   - napari
+  - napari-svg
   - magicgui
   - qtpy
   - pyqt
+  - vispy
+  - superqt
+  - pyopengl
+
+  # ---------- ImageJ / TrackMate ----------
+  - pyimagej
+  - scyjava
+  - imglyb
+  - jpype1
+  - openjdk=11
+  - maven
+  - napari-imagej
+
+  # ---------- pytorch (CUDA 12.4) ----------
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.4
+
+  # ---------- notebook / dev ----------
   - ipykernel
   - pip
+
   - pip:
       - cellpose
-      - pyimagej
-      - scyjava
-      - jdk4py
