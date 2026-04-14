@@ -1,4 +1,4 @@
-# Cell Death Analysis GUI
+# FluoroFate
 
 A **napari**-based GUI for quantifying cell death and cell fate from multi-channel fluorescence timelapse TIFF images.
 
@@ -39,7 +39,7 @@ A compatible Java installation is required for TrackMate. The GUI will attempt t
 ### From a notebook
 
 ```python
-from cell_death_gui import launch
+from fluorofate import launch
 
 app = launch()
 ```
@@ -47,7 +47,7 @@ app = launch()
 ### From the command line
 
 ```bash
-python cell_death_gui.py
+python fluorofate.py
 ```
 
 ## Input Format

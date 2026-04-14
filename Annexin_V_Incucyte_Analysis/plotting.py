@@ -11,11 +11,11 @@ from matplotlib.ticker import MaxNLocator
 from colours import assign_colours, build_category_colormap
 
 
-def plot_persistent_percentages(summary_df, fluor_names, title="Persistent positive cells over time"):
+def plot_persistent_percentages(summary_df, fluor_names, title="Persistent Positive Cells Over Time"):
     """Line plot of cumulative % positive cells over frames (persistent mode).
 
     Each fluorophore gets its own coloured line, plus a black "Total" line
-    summing all fates. Y-axis is fixed 0-100%.
+    summing all fates. Y-axis is fixed 0-100% so experiments can be compared easily.
 
     Parameters
     ----------
@@ -44,7 +44,7 @@ def plot_persistent_percentages(summary_df, fluor_names, title="Persistent posit
     return fig, ax
 
 
-def plot_snapshot_percentages(summary_df, categories, title="Per-frame categories over time"):
+def plot_snapshot_percentages(summary_df, categories, title="Per-Frame Categories Over Time"):
     """Line plot of % cells per category over frames (snapshot mode).
 
     Each category gets a colour derived from build_category_colormap.
@@ -75,7 +75,7 @@ def plot_snapshot_percentages(summary_df, categories, title="Per-frame categorie
     return fig, ax
 
 
-def plot_snapshot_trajectories(tracks_df, snapshot_df, title="Snapshot trajectories by category"):
+def plot_snapshot_trajectories(tracks_df, snapshot_df, title="Snapshot Trajectories by Category"):
     """Plot cell XY trajectories coloured by snapshot category at each step.
 
     Each cell's track is drawn as a series of line segments where each
@@ -162,7 +162,7 @@ def plot_snapshot_trajectories(tracks_df, snapshot_df, title="Snapshot trajector
     return fig, ax
 
 
-def plot_snapshot_cell_timelines(snapshot_df, tracks_df=None, title="Cell status over time"):
+def plot_snapshot_cell_timelines(snapshot_df, tracks_df=None, title="Cell Status Over Time"):
     """Horizontal bar chart showing each cell's category across all frames.
 
     Each row is a cell (Y-axis), each column is a frame (X-axis), and
@@ -206,12 +206,12 @@ def plot_snapshot_cell_timelines(snapshot_df, tracks_df=None, title="Cell status
         lineage_map = tracks_dataframe.drop_duplicates("label_id")[["label_id", "lineage_id", "parent_track_id"]]
         lineage_map = lineage_map.set_index("label_id")
 
-        def lineage_sort_key(label_id):
-            lineage_id_string = lineage_map.loc[label_id, "lineage_id"] if label_id in lineage_map.index else str(label_id)
-            parts = str(lineage_id_string).split(".")
-            return tuple(int(part) if part.isdigit() else 0 for part in parts)
-
-        cell_ids = sorted(snapshot_df["label_id"].unique(), key=lineage_sort_key)
+        cell_ids = sorted(
+            snapshot_df["label_id"].unique(),
+            key=lambda lid: tuple(int(p) if p.isdigit() else 0
+                for p in str(lineage_map.loc[lid, "lineage_id"] if lid in lineage_map.index else lid).split(".")
+            ),
+        )
         label_display = {}
         for label_id in cell_ids:
             label_display[label_id] = str(lineage_map.loc[label_id, "lineage_id"]) if label_id in lineage_map.index else str(label_id)

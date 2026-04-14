@@ -1,4 +1,4 @@
-"""Cell death analysis — napari + magicgui GUI.
+"""FluoroFate — napari + magicgui GUI.
 
 Pipeline: Cellpose segmentation -> TrackMate tracking -> fluorescence
 thresholding -> fate assignment (persistent / snapshot) -> percentage
@@ -62,7 +62,7 @@ _CP_DEFAULT_CELLPROB_THRESHOLD = 0.0
 #  GUI Application
 # ---------------------------------------------------------------------------
 
-class CellDeathAnalysisApp:
+class FluoroFateApp:
     """Napari-based GUI that wraps the full cell-death analysis pipeline."""
 
     # -- placeholder methods for config panels (never called directly) ------
@@ -78,15 +78,15 @@ class CellDeathAnalysisApp:
     @staticmethod
     def _channel_placeholder(
         brightfield_channel: int = -1,
-        fluor_1_name: str = "Annexin_V",
+        fluor_1_name: str = "Green",
         fluor_1_channel: int = 0,
-        fluor_1_threshold: str = "mean",
-        fluor_2_name: str = "PI",
+        fluor_1_threshold: str = "otsu",
+        fluor_2_name: str = "Red",
         fluor_2_channel: int = 1,
-        fluor_2_threshold: str = "mean",
+        fluor_2_threshold: str = "otsu",
         fluor_3_name: str = "",
         fluor_3_channel: int = 2,
-        fluor_3_threshold: str = "mean",
+        fluor_3_threshold: str = "otsu",
     ):
         pass
 
@@ -110,7 +110,7 @@ class CellDeathAnalysisApp:
     def _trackmate_placeholder(
         initial_search_radius: float = 30.0,
         search_radius: float = 150.0,
-        max_frame_gap: int = 3,
+        max_frame_gap: int = 2,
         allow_splitting: bool = False,
         splitting_max_distance: float = 15.0,
         allow_merging: bool = False,
@@ -120,7 +120,7 @@ class CellDeathAnalysisApp:
     # -- init ---------------------------------------------------------------
 
     def __init__(self):
-        self.viewer = napari.Viewer(title="Cell Death Analysis")
+        self.viewer = napari.Viewer(title="FluoroFate")
 
         qt_app = QApplication.instance()
         if qt_app is not None:
@@ -1089,7 +1089,7 @@ class CellDeathAnalysisApp:
 
 def launch():
     """Create the GUI and return the app instance (for notebook use)."""
-    return CellDeathAnalysisApp()
+    return FluoroFateApp()
 
 
 def main():
