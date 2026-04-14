@@ -1,4 +1,4 @@
-name: cellpose-nap-ij
+name: fluorofate_environment
 channels:
   - conda-forge
 dependencies:
