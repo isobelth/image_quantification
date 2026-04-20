@@ -9,6 +9,8 @@ Two workflows:
   - Analyse All in Folder : batch every TIFF in a folder -> CSV.
 """
 
+import logging
+import traceback
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -50,12 +52,21 @@ from plotting import (
 )
 
 warnings.filterwarnings("ignore")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+LOGGER = logging.getLogger("fluorofate")
 
+# Cellpose defaults. ``None`` for the diameter triggers per-image
+# auto-estimation in ``cellpose_live_segmentation``. The flow and
+# cell-probability thresholds are the Cellpose library defaults at the
+# time of writing; tighten ``flow_threshold`` to reject more uncertain
+# boundaries and raise ``cellprob_threshold`` to drop dim cells.
+CELLPOSE_DEFAULT_DIAMETER = None
+CELLPOSE_DEFAULT_FLOW_THRESHOLD = 0.4
+CELLPOSE_DEFAULT_CELLPROB_THRESHOLD = 0.0
 
-# Cellpose default parameters
-_CP_DEFAULT_DIAMETER = None
-_CP_DEFAULT_FLOW_THRESHOLD = 0.4
-_CP_DEFAULT_CELLPROB_THRESHOLD = 0.0
+# Cell frame-presence cutoffs (percent of frames a cell must appear in)
+# used to generate filtered analysis outputs.
+FRAME_PRESENCE_CUTOFF_PERCENTAGES = (30, 40, 50, 60)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +122,7 @@ class FluoroFateApp:
         initial_search_radius: float = 30.0,
         search_radius: float = 150.0,
         max_frame_gap: int = 2,
-        allow_splitting: bool = False,
+        allow_splitting: bool = True,
         splitting_max_distance: float = 15.0,
         allow_merging: bool = False,
     ):
@@ -127,7 +138,11 @@ class FluoroFateApp:
             qt_app.setQuitOnLastWindowClosed(not running_in_notebook())
 
         # -- state --
-        self._ij = None  # ImageJ instance, lazy-initialised & reused
+        # PyImageJ instance, lazy-initialised on first TrackMate call and
+        # then reused for every subsequent file (re-initialising the JVM
+        # for every file is extremely slow). The same instance is shared
+        # across batch processing.
+        self._imagej_instance = None
         self._results: List[dict] = []
         self._results_df: Optional[pd.DataFrame] = None
 
@@ -354,7 +369,7 @@ class FluoroFateApp:
         custom_value = str(self.analysis_panel.custom_model_file.value).strip()
         return bool(custom_value and custom_value != ".")
 
-    def _on_custom_model_file_changed(self, *_):
+    def _on_custom_model_file_changed(self, *event_args):
         use_custom = self._custom_model_is_selected()
         self.cellpose_panel.model_type.enabled = not use_custom
         self.cellpose_panel.model_type.tooltip = (
@@ -364,26 +379,34 @@ class FluoroFateApp:
         )
 
     def _read_fluorophore_config(self):
-        """Read channel panel -> (fluor_names, fluor_channels, bf_channel)."""
-        bf = int(self.channel_panel.brightfield_channel.value)
-        names: List[str] = []
-        channels: Dict[str, int] = {}
-        thresholds: Dict[str, str] = {}
-        for attr_n, attr_c, attr_t in [
-            ("fluor_1_name", "fluor_1_channel", "fluor_1_threshold"),
-            ("fluor_2_name", "fluor_2_channel", "fluor_2_threshold"),
-            ("fluor_3_name", "fluor_3_channel", "fluor_3_threshold"),
-        ]:
-            n = str(getattr(self.channel_panel, attr_n).value).strip()
-            c = int(getattr(self.channel_panel, attr_c).value)
-            t = str(getattr(self.channel_panel, attr_t).value)
-            if n:
-                names.append(n)
-                channels[n] = c
-                thresholds[n] = t
-        if not names:
+        """Read channel panel and return fluorophore names, per-name channel/threshold maps and brightfield channel.
+
+        Raises ``ValueError`` if no fluorophore name is given or if any
+        named fluorophore shares a channel with another fluorophore or
+        with the brightfield channel.
+        """
+        brightfield_channel = int(self.channel_panel.brightfield_channel.value)
+        fluorophore_names: List[str] = []
+        fluorophore_channels: Dict[str, int] = {}
+        fluorophore_thresholds: Dict[str, str] = {}
+        for name_attr, channel_attr, threshold_attr in [("fluor_1_name", "fluor_1_channel", "fluor_1_threshold"), ("fluor_2_name", "fluor_2_channel", "fluor_2_threshold"), ("fluor_3_name", "fluor_3_channel", "fluor_3_threshold")]:
+            fluorophore_name = str(getattr(self.channel_panel, name_attr).value).strip()
+            channel_index = int(getattr(self.channel_panel, channel_attr).value)
+            threshold_method = str(getattr(self.channel_panel, threshold_attr).value)
+            if fluorophore_name:
+                fluorophore_names.append(fluorophore_name)
+                fluorophore_channels[fluorophore_name] = channel_index
+                fluorophore_thresholds[fluorophore_name] = threshold_method
+        if not fluorophore_names:
             raise ValueError("At least one fluorophore name must be provided.")
-        return names, channels, bf, thresholds
+        seen_channels = {}
+        for fluorophore_name, channel_index in fluorophore_channels.items():
+            if channel_index in seen_channels:
+                raise ValueError(f"Fluorophore '{fluorophore_name}' uses channel {channel_index}, already used by '{seen_channels[channel_index]}'.")
+            if brightfield_channel >= 0 and channel_index == brightfield_channel:
+                raise ValueError(f"Fluorophore '{fluorophore_name}' uses channel {channel_index}, which is also the brightfield channel.")
+            seen_channels[channel_index] = fluorophore_name
+        return fluorophore_names, fluorophore_channels, brightfield_channel, fluorophore_thresholds
 
     def _resolve_single_run_paths(self):
         """Resolve and validate single-image input/output paths."""
@@ -401,26 +424,26 @@ class FluoroFateApp:
         return tiff_path, out_dir, work_dir
 
     def _load_image_channels(self, tiff_path: Path):
-        """Load TIFF and return brightfield + fluorophore stacks."""
-        fluor_names, fluor_channels, bf_ch, _thresholds = self._read_fluorophore_config()
+        """Load a 4-D TIFF and split it into brightfield and fluorophore stacks.
+
+        Returns ``(brightfield_stack, fluorophore_stacks, fluorophore_names, num_channels)``
+        where ``fluorophore_stacks`` is ``{name: (n_frames, H, W) array}``.
+        Raises ``ValueError`` if the file is not 4-D ``(T, C, Y, X)`` or if
+        a configured channel index is out of range.
+        """
+        fluorophore_names, fluorophore_channels, brightfield_channel, _ = self._read_fluorophore_config()
         image = tifffile.imread(str(tiff_path))
         if image.ndim != 4:
-            raise ValueError(
-                f"Expected 4-D TIFF (T, C, Y, X), got {image.ndim}-D "
-                f"shape {image.shape}."
-            )
-        n_channels = image.shape[1]
-        for fn, ch in fluor_channels.items():
-            if ch >= n_channels:
-                raise ValueError(
-                    f"Channel {ch} for '{fn}' is out of range "
-                    f"(image has {n_channels} channels)."
-                )
-        bf_image = image[:, bf_ch, :, :]
-        fluor_images = {
-            fn: image[:, fluor_channels[fn], :, :] for fn in fluor_names
-        }
-        return bf_image, fluor_images, fluor_names, n_channels
+            raise ValueError(f"Expected 4-D TIFF (T, C, Y, X), got {image.ndim}-D shape {image.shape}.")
+        num_channels = image.shape[1]
+        for fluorophore_name, channel_index in fluorophore_channels.items():
+            if channel_index >= num_channels:
+                raise ValueError(f"Channel {channel_index} for '{fluorophore_name}' is out of range (image has {num_channels} channels).")
+        if brightfield_channel >= num_channels:
+            raise ValueError(f"Brightfield channel {brightfield_channel} is out of range (image has {num_channels} channels).")
+        brightfield_stack = image[:, brightfield_channel, :, :]
+        fluorophore_stacks = {fluorophore_name: image[:, fluorophore_channels[fluorophore_name], :, :] for fluorophore_name in fluorophore_names}
+        return brightfield_stack, fluorophore_stacks, fluorophore_names, num_channels
 
     def _resolve_cellpose_model_config(self):
         """Read model panel and resolve built-in/custom model selection."""
@@ -439,568 +462,346 @@ class FluoroFateApp:
         return model_type, custom_model_path
 
     def _run_segmentation_stage(self, tiff_path: Path, work_dir: Path):
-        """Run Cellpose segmentation and save masks stack."""
-        cp_model, cp_custom_model = self._resolve_cellpose_model_config()
-        cp_min = int(self.cellpose_panel.min_size.value)
-        cp_gpu = bool(self.cellpose_panel.use_gpu.value)
+        """Run Cellpose segmentation on the brightfield channel and save the masks stack.
+
+        Returns a dict with the loaded brightfield + fluorophore stacks,
+        the resulting masks stack and the path it was written to.
+        """
+        cellpose_model_type, cellpose_custom_model_path = self._resolve_cellpose_model_config()
+        cellpose_min_size = int(self.cellpose_panel.min_size.value)
+        cellpose_use_gpu = bool(self.cellpose_panel.use_gpu.value)
 
         self._set_progress(2, fmt="Loading image...")
         self._append_log(f"Loading: {tiff_path.name}")
-        bf_image, fluor_images, _, n_channels = self._load_image_channels(
-            tiff_path
-        )
-        self._append_log(
-            f"  Shape: ({bf_image.shape[0]}, {n_channels}, {bf_image.shape[1]}, "
-            f"{bf_image.shape[2]})  ({bf_image.shape[0]} frames, {n_channels} channels)"
-        )
+        brightfield_stack, fluorophore_stacks, _, num_channels = self._load_image_channels(tiff_path)
+        self._append_log(f"  Shape: ({brightfield_stack.shape[0]}, {num_channels}, {brightfield_stack.shape[1]}, {brightfield_stack.shape[2]})  ({brightfield_stack.shape[0]} frames, {num_channels} channels)")
 
         self._set_progress(5, fmt="Cellpose: starting...")
         self._append_log("Running Cellpose segmentation...")
 
-        def _cp_cb(frame, total):
-            pct = 5 + int(90 * frame / total)
-            self._set_progress(pct, fmt=f"Cellpose: frame {frame}/{total}")
-
-        masks_stack = cellpose_live_segmentation(
-            bf_image,
-            diameter=_CP_DEFAULT_DIAMETER,
-            flow_threshold=_CP_DEFAULT_FLOW_THRESHOLD,
-            cellprob_threshold=_CP_DEFAULT_CELLPROB_THRESHOLD,
-            min_size=cp_min,
-            model_type=cp_model,
-            custom_model_path=cp_custom_model,
-            gpu=cp_gpu,
-            progress_callback=_cp_cb,
-        )
+        masks_stack = cellpose_live_segmentation(brightfield_stack, diameter=CELLPOSE_DEFAULT_DIAMETER, flow_threshold=CELLPOSE_DEFAULT_FLOW_THRESHOLD, cellprob_threshold=CELLPOSE_DEFAULT_CELLPROB_THRESHOLD, min_size=cellpose_min_size, model_type=cellpose_model_type, custom_model_path=cellpose_custom_model_path, gpu=cellpose_use_gpu, progress_callback=lambda current_frame, total_frames: self._set_progress(5 + int(90 * current_frame / total_frames), fmt=f"Cellpose: frame {current_frame}/{total_frames}"))
 
         masks_path = work_dir / "masks_stack.tiff"
         tifffile.imwrite(str(masks_path), masks_stack.astype(np.uint16))
         self._set_progress(100, fmt="Segmentation saved")
         self._append_log(f"[OK] Saved segmentation -> {masks_path}")
 
-        return {
-            "bf_image": bf_image,
-            "fluor_images": fluor_images,
-            "masks_stack": masks_stack,
-            "masks_path": masks_path,
-        }
+        return {"bf_image": brightfield_stack, "fluor_images": fluorophore_stacks, "masks_stack": masks_stack, "masks_path": masks_path}
 
     def _run_tracking_stage(self, work_dir: Path):
-        """Run TrackMate from saved masks stack and save linked labels."""
-        tm_init = float(self.trackmate_panel.initial_search_radius.value)
-        tm_search = float(self.trackmate_panel.search_radius.value)
-        tm_gap = int(self.trackmate_panel.max_frame_gap.value)
-        tm_split = bool(self.trackmate_panel.allow_splitting.value)
-        tm_split_dist = float(self.trackmate_panel.splitting_max_distance.value)
-        tm_merge = bool(self.trackmate_panel.allow_merging.value)
+        """Run TrackMate on the saved Cellpose mask stack and save the linked-label TIFF.
+
+        Reuses ``self._imagej_instance`` across calls so the JVM is
+        initialised exactly once per FluoroFate session.
+        """
+        initial_search_radius = float(self.trackmate_panel.initial_search_radius.value)
+        search_radius = float(self.trackmate_panel.search_radius.value)
+        max_frame_gap = int(self.trackmate_panel.max_frame_gap.value)
+        allow_track_splitting = bool(self.trackmate_panel.allow_splitting.value)
+        splitting_max_distance = float(self.trackmate_panel.splitting_max_distance.value)
+        allow_track_merging = bool(self.trackmate_panel.allow_merging.value)
 
         masks_path = work_dir / "masks_stack.tiff"
         if not masks_path.exists():
-            raise FileNotFoundError(
-                "No saved segmentation found. Run segmentation first."
-            )
+            raise FileNotFoundError("No saved segmentation found. Run segmentation first.")
 
         self._set_progress(0, maximum=0, fmt="Running TrackMate...")
         self._append_log("Running TrackMate (UI may be unresponsive)...")
-        tm_out = generate_trackmate_labels(
-            masks_path=masks_path,
-            output_directory=work_dir,
-            initial_search_radius=tm_init,
-            search_radius=tm_search,
-            max_frame_gap=tm_gap,
-            allow_track_splitting=tm_split,
-            splitting_max_distance=tm_split_dist,
-            allow_track_merging=tm_merge,
-            ij=self._ij,
-        )
-        self._ij = tm_out["ij"]
-        tracks_df = tm_out["trackmate_tracks_df"]
-        linked_labels = tm_out["linked_labels"]
-        n_tracks = int(tracks_df["track_id"].nunique())
+        if not allow_track_splitting:
+            self._append_log("[WARN] TrackMate splitting is disabled \u2014 mother/daughter lineage will not be inferred.")
+        trackmate_output = generate_trackmate_labels(masks_path=masks_path, output_directory=work_dir, initial_search_radius=initial_search_radius, search_radius=search_radius, max_frame_gap=max_frame_gap, allow_track_splitting=allow_track_splitting, splitting_max_distance=splitting_max_distance, allow_track_merging=allow_track_merging, imagej_instance=self._imagej_instance)
+        self._imagej_instance = trackmate_output["imagej_instance"]
+        tracks_dataframe = trackmate_output["trackmate_tracks_df"]
+        linked_labels = trackmate_output["linked_labels"]
+        num_tracks = int(tracks_dataframe["track_id"].nunique())
+        num_division_events = int(tracks_dataframe.drop_duplicates("track_id")["parent_track_id"].notna().sum()) if "parent_track_id" in tracks_dataframe.columns else 0
 
         self._set_progress(100, fmt="Tracking saved")
-        self._append_log(
-            f"[OK] Saved tracking -> {tm_out['linked_labels_path']}"
-        )
-        self._append_log(
-            f"  Tracked {n_tracks} cells, {len(tracks_df)} points"
-        )
+        self._append_log(f"[OK] Saved tracking -> {trackmate_output['linked_labels_path']}")
+        self._append_log(f"  Tracked {num_tracks} cells, {len(tracks_dataframe)} points, {num_division_events} division event(s)")
 
-        return {
-            "tracks_df": tracks_df,
-            "linked_labels": linked_labels,
-            "linked_labels_path": tm_out["linked_labels_path"],
-            "tracks_csv": tm_out["tracks_csv"],
-        }
+        return {"tracks_df": tracks_dataframe, "linked_labels": linked_labels, "linked_labels_path": trackmate_output["linked_labels_path"], "tracks_csv": trackmate_output["tracks_csv"]}
 
     def _run_analysis_stage(self, tiff_path: Path, work_dir: Path, mode: str):
-        """Run either persistent or snapshot analysis from saved tracking."""
-        _fn, _fc, _bf, thresh_map = self._read_fluorophore_config()
+        """Run either the persistent or the snapshot analysis from saved tracking outputs.
+
+        Loads the linked-label TIFF and the original fluorescence channels,
+        thresholds each fluorescence channel, computes per-cell positivity,
+        assigns fates and writes all per-cell, per-frame, per-cutoff and
+        plot outputs to ``work_dir``. Returns a one-row summary dict
+        suitable for batch aggregation plus a ``run_data`` dict that the
+        viewer can render.
+        """
+        _, _, _, fluorophore_threshold_methods = self._read_fluorophore_config()
         blur_sigma = float(self.analysis_panel.blur_sigma.value)
 
-        linked_path = work_dir / "linked_labels_trackmate.tiff"
-        if not linked_path.exists():
-            raise FileNotFoundError(
-                "No saved tracking found. Run tracking first."
-            )
+        linked_labels_path = work_dir / "linked_labels_trackmate.tiff"
+        if not linked_labels_path.exists():
+            raise FileNotFoundError("No saved tracking found. Run tracking first.")
 
-        bf_image, fluor_images, fluor_names, _ = self._load_image_channels(
-            tiff_path
-        )
-        linked_labels = tifffile.imread(str(linked_path)).astype(np.uint32)
+        brightfield_stack, fluorophore_stacks, fluorophore_names, _ = self._load_image_channels(tiff_path)
+        linked_labels = tifffile.imread(str(linked_labels_path)).astype(np.uint32)
 
         self._set_progress(10, fmt="Fluorescence segmentation...")
         self._append_log("Segmenting fluorescence channels...")
-        fl_out = segment_fluorescence(
-            fluor_images, blur_sigma=blur_sigma, threshold_method=thresh_map
-        )
-        pos_label_imgs = {fn: fl_out[fn]["positive_labels"] for fn in fluor_names}
-        frame_cell_pos, positive_cell_labels = compute_cell_positivity(
-            linked_labels, pos_label_imgs, fluor_names
-        )
+        fluorescence_segmentation = segment_fluorescence(fluorophore_stacks, blur_sigma=blur_sigma, threshold_method=fluorophore_threshold_methods)
+        positive_label_stacks = {fluorophore_name: fluorescence_segmentation[fluorophore_name]["positive_labels"] for fluorophore_name in fluorophore_names}
+        frame_cell_positive_area, positive_cell_labels = compute_cell_positivity(linked_labels, positive_label_stacks, fluorophore_names)
 
         self._set_progress(45, fmt=f"Assigning fates ({mode})...")
         self._append_log(f"Assigning fates (mode={mode})...")
         locked_labels = None
-        assignments_df = None
-        snapshot_df = None
+        assignments_dataframe = None
+        snapshot_dataframe = None
 
-        # Load lineage info from tracks CSV (if available)
-        tracks_csv = work_dir / "trackmate_tracks.csv"
-        _lineage_cols = ["track_id", "lineage_id", "parent_track_id", "generation"]
-        if tracks_csv.exists():
-            _tracks_raw = pd.read_csv(tracks_csv)
-            if "lineage_id" in _tracks_raw.columns:
-                _lineage_map = (
-                    _tracks_raw.drop_duplicates("track_id")[_lineage_cols]
-                    .copy()
-                )
-            else:
-                _lineage_map = pd.DataFrame(columns=_lineage_cols)
+        # Load lineage info from the tracks CSV (if it exists). This is
+        # used to enrich the per-cell output tables with mother/daughter
+        # relationships.
+        tracks_csv_path = work_dir / "trackmate_tracks.csv"
+        lineage_columns = ["track_id", "lineage_id", "parent_track_id", "generation"]
+        if tracks_csv_path.exists():
+            tracks_raw = pd.read_csv(tracks_csv_path)
+            lineage_lookup = tracks_raw.drop_duplicates("track_id")[lineage_columns].copy() if "lineage_id" in tracks_raw.columns else pd.DataFrame(columns=lineage_columns)
         else:
-            _lineage_map = pd.DataFrame(columns=_lineage_cols)
+            lineage_lookup = pd.DataFrame(columns=lineage_columns)
 
         if mode == "persistent":
-            assignments_df, locked_labels, persistent_per_frame = assign_persistent_fates(
-                linked_labels, frame_cell_pos,
-            )
-            assignments_df = assignments_df.sort_values("label_id").reset_index(
-                drop=True
-            )
-            csv = work_dir / "assignments_persistent.csv"
-            assignments_df.to_csv(csv, index=False)
+            assignments_dataframe, locked_labels, persistent_per_frame = assign_persistent_fates(linked_labels, frame_cell_positive_area)
+            assignments_dataframe = assignments_dataframe.sort_values("label_id").reset_index(drop=True)
+            assignments_dataframe.to_csv(work_dir / "assignments_persistent.csv", index=False)
             if len(persistent_per_frame) > 0:
-                pf_csv = work_dir / "persistent_per_frame.csv"
-                persistent_per_frame.to_csv(pf_csv, index=False)
-                self._append_log(f"  Per-frame metrics -> {pf_csv.name}")
-            persistent_by_cell = assignments_df.rename(
-                columns={"label_id": "cell_id"}
-            ).copy()
-            persistent_by_cell["track_id"] = (
-                persistent_by_cell["cell_id"].astype(int) - 1
-            )
-            if len(_lineage_map) > 0:
-                persistent_by_cell = persistent_by_cell.merge(
-                    _lineage_map, on="track_id", how="left"
-                )
-            persistent_by_cell_csv = work_dir / "persistent_by_cell.csv"
-            persistent_by_cell.to_csv(persistent_by_cell_csv, index=False)
-            self._append_log(
-                f"  Fates: {dict(assignments_df['fate'].value_counts())}"
-            )
+                persistent_per_frame_path = work_dir / "persistent_per_frame.csv"
+                persistent_per_frame.to_csv(persistent_per_frame_path, index=False)
+                self._append_log(f"  Per-frame metrics -> {persistent_per_frame_path.name}")
+            persistent_by_cell = assignments_dataframe.rename(columns={"label_id": "cell_id"}).copy()
+            persistent_by_cell["track_id"] = persistent_by_cell["cell_id"].astype(int) - 1
+            if len(lineage_lookup) > 0:
+                persistent_by_cell = persistent_by_cell.merge(lineage_lookup, on="track_id", how="left")
+            persistent_by_cell.to_csv(work_dir / "persistent_by_cell.csv", index=False)
+            self._append_log(f"  Fates: {dict(assignments_dataframe['fate'].value_counts())}")
         else:
-            snapshot_df = assign_snapshot_fates(
-                linked_labels, frame_cell_pos,
-            )
-            snapshot_df = snapshot_df.sort_values(
-                ["label_id", "frame"]
-            ).reset_index(drop=True)
-            csv = work_dir / "snapshot.csv"
-            snapshot_df.to_csv(csv, index=False)
-            snapshot_by_cell = snapshot_df.rename(
-                columns={"label_id": "cell_id"}
-            ).copy()
-            snapshot_by_cell["track_id"] = (
-                snapshot_by_cell["cell_id"].astype(int) - 1
-            )
-            if len(_lineage_map) > 0:
-                snapshot_by_cell = snapshot_by_cell.merge(
-                    _lineage_map, on="track_id", how="left"
-                )
-            snapshot_by_cell_csv = work_dir / "snapshot_by_cell_long.csv"
-            snapshot_by_cell.to_csv(snapshot_by_cell_csv, index=False)
+            snapshot_dataframe = assign_snapshot_fates(linked_labels, frame_cell_positive_area)
+            snapshot_dataframe = snapshot_dataframe.sort_values(["label_id", "frame"]).reset_index(drop=True)
+            snapshot_dataframe.to_csv(work_dir / "snapshot.csv", index=False)
+            snapshot_by_cell_long = snapshot_dataframe.rename(columns={"label_id": "cell_id"}).copy()
+            snapshot_by_cell_long["track_id"] = snapshot_by_cell_long["cell_id"].astype(int) - 1
+            if len(lineage_lookup) > 0:
+                snapshot_by_cell_long = snapshot_by_cell_long.merge(lineage_lookup, on="track_id", how="left")
+            snapshot_by_cell_long.to_csv(work_dir / "snapshot_by_cell_long.csv", index=False)
 
-            # Wide-format: one row per cell, columns for each frame's category
-            # Include lineage columns alongside the pivoted frame categories
-            _pivot_cols = ["cell_id"]
-            if "lineage_id" in snapshot_by_cell.columns:
-                _pivot_cols += ["lineage_id", "parent_track_id", "generation"]
-            snapshot_wide = (
-                snapshot_by_cell.pivot(
-                    index="cell_id", columns="frame", values="category"
-                )
-                .reset_index()
-                .sort_values("cell_id")
-            )
-            snapshot_wide.columns = [
-                "cell_id"
-                if c == "cell_id"
-                else f"frame_{int(c)}_category"
-                for c in snapshot_wide.columns
-            ]
-            # Merge lineage info into the wide table
-            if "lineage_id" in snapshot_by_cell.columns:
-                _lin_per_cell = (
-                    snapshot_by_cell.drop_duplicates("cell_id")
-                    [["cell_id", "lineage_id", "parent_track_id", "generation"]]
-                )
-                snapshot_wide = snapshot_wide.merge(
-                    _lin_per_cell, on="cell_id", how="left"
-                )
-                # Move lineage columns right after cell_id
-                _front = ["cell_id", "lineage_id", "parent_track_id", "generation"]
-                _rest = [c for c in snapshot_wide.columns if c not in _front]
-                snapshot_wide = snapshot_wide[_front + _rest]
-            snapshot_wide_csv = work_dir / "snapshot_by_cell_wide.csv"
-            snapshot_wide.to_csv(snapshot_wide_csv, index=False)
-            cats = sorted(snapshot_df["category"].unique())
-            self._append_log(f"  Categories: {cats}")
+            # Wide-format snapshot table: one row per cell, one column per frame.
+            snapshot_wide = snapshot_by_cell_long.pivot(index="cell_id", columns="frame", values="category").reset_index().sort_values("cell_id")
+            snapshot_wide.columns = ["cell_id" if column_name == "cell_id" else f"frame_{int(column_name)}_category" for column_name in snapshot_wide.columns]
+            if "lineage_id" in snapshot_by_cell_long.columns:
+                lineage_per_cell = snapshot_by_cell_long.drop_duplicates("cell_id")[["cell_id", "lineage_id", "parent_track_id", "generation"]]
+                snapshot_wide = snapshot_wide.merge(lineage_per_cell, on="cell_id", how="left")
+                front_columns = ["cell_id", "lineage_id", "parent_track_id", "generation"]
+                snapshot_wide = snapshot_wide[front_columns + [column_name for column_name in snapshot_wide.columns if column_name not in front_columns]]
+            snapshot_wide.to_csv(work_dir / "snapshot_by_cell_wide.csv", index=False)
+            self._append_log(f"  Categories: {sorted(snapshot_dataframe['category'].unique())}")
 
         self._set_progress(75, fmt="Computing percentages...")
-        n_fr = linked_labels.shape[0]
-        stem = tiff_path.stem
+        num_frames = linked_labels.shape[0]
+        file_stem = tiff_path.stem
         if mode == "persistent":
-            summary_df = compute_persistent_percentages(
-                assignments_df, n_fr, fluor_names
-            )
-            fig, _ = plot_persistent_percentages(
-                summary_df, fluor_names, title=stem
-            )
-            summary_csv = work_dir / "percentages_persistent.csv"
-            plot_pdf = work_dir / "percentages_persistent.pdf"
-
-            cutoff_pcts = [30, 40, 50, 60]
-            for cutoff in cutoff_pcts:
-                filt_df = filter_persistent_by_frame_presence(
-                    assignments_df, linked_labels, n_fr, cutoff
-                )
-                n_cells = len(filt_df)
-                if n_cells == 0:
-                    self._append_log(
-                        f"  No cells at \u2265{cutoff}% frame presence, skipping"
-                    )
+            summary_dataframe = compute_persistent_percentages(assignments_dataframe, num_frames, fluorophore_names)
+            summary_figure, _ = plot_persistent_percentages(summary_dataframe, fluorophore_names, title=file_stem)
+            summary_csv_path = work_dir / "percentages_persistent.csv"
+            summary_pdf_path = work_dir / "percentages_persistent.pdf"
+            for cutoff_percentage in FRAME_PRESENCE_CUTOFF_PERCENTAGES:
+                filtered_assignments = filter_persistent_by_frame_presence(assignments_dataframe, linked_labels, num_frames, cutoff_percentage)
+                num_filtered_cells = len(filtered_assignments)
+                if num_filtered_cells == 0:
+                    self._append_log(f"  No cells at \u2265{cutoff_percentage}% frame presence, skipping")
                     continue
-                filt_summary = compute_persistent_percentages(
-                    filt_df, n_fr, fluor_names
-                )
-                fig_pct, _ = plot_persistent_percentages(
-                    filt_summary,
-                    fluor_names,
-                    title=f"{stem} \u2014 \u2265{cutoff}% frames (n={n_cells} cells)",
-                )
-                pct_pdf = work_dir / f"percentages_persistent_{cutoff}pct.pdf"
-                fig_pct.savefig(str(pct_pdf), bbox_inches="tight")
-                plt.close(fig_pct)
-                filt_summary.to_csv(
-                    work_dir / f"percentages_persistent_{cutoff}pct.csv",
-                    index=False,
-                )
+                filtered_summary = compute_persistent_percentages(filtered_assignments, num_frames, fluorophore_names)
+                cutoff_figure, _ = plot_persistent_percentages(filtered_summary, fluorophore_names, title=f"{file_stem} \u2014 \u2265{cutoff_percentage}% frames (n={num_filtered_cells} cells)")
+                cutoff_figure.savefig(str(work_dir / f"percentages_persistent_{cutoff_percentage}pct.pdf"), bbox_inches="tight")
+                plt.close(cutoff_figure)
+                filtered_summary.to_csv(work_dir / f"percentages_persistent_{cutoff_percentage}pct.csv", index=False)
         else:
-            summary_df, cats = compute_snapshot_percentages(snapshot_df, n_fr)
-            fig, _ = plot_snapshot_percentages(summary_df, cats, title=stem)
-            summary_csv = work_dir / "percentages_snapshot.csv"
-            plot_pdf = work_dir / "percentages_snapshot.pdf"
-            tracks_csv = work_dir / "trackmate_tracks.csv"
-            tracks_for_plot = (
-                pd.read_csv(tracks_csv)
-                if tracks_csv.exists()
-                else pd.DataFrame(
-                    columns=["track_id", "t", "y", "x", "quality"]
-                )
-            )
+            summary_dataframe, snapshot_categories = compute_snapshot_percentages(snapshot_dataframe, num_frames)
+            summary_figure, _ = plot_snapshot_percentages(summary_dataframe, snapshot_categories, title=file_stem)
+            summary_csv_path = work_dir / "percentages_snapshot.csv"
+            summary_pdf_path = work_dir / "percentages_snapshot.pdf"
+            tracks_for_plot = pd.read_csv(tracks_csv_path) if tracks_csv_path.exists() else pd.DataFrame(columns=["track_id", "t", "y", "x", "quality"])
+            for cutoff_percentage in FRAME_PRESENCE_CUTOFF_PERCENTAGES:
+                filtered_tracks, filtered_snapshot = filter_by_frame_presence(tracks_for_plot, snapshot_dataframe, num_frames, cutoff_percentage)
+                num_filtered_cells = filtered_snapshot["label_id"].nunique() if len(filtered_snapshot) > 0 else 0
+                filtered_summary, filtered_categories = compute_snapshot_percentages(filtered_snapshot, num_frames)
+                cutoff_figure, _ = plot_snapshot_percentages(filtered_summary, filtered_categories, title=f"{file_stem} \u2014 \u2265{cutoff_percentage}% frames (n={num_filtered_cells} cells)")
+                cutoff_figure.savefig(str(work_dir / f"percentages_snapshot_{cutoff_percentage}pct.pdf"), bbox_inches="tight")
+                plt.close(cutoff_figure)
+                filtered_summary.to_csv(work_dir / f"percentages_snapshot_{cutoff_percentage}pct.csv", index=False)
 
-            cutoff_pcts = [30, 40, 50, 60]
-            for cutoff in cutoff_pcts:
-                ft, fs = filter_by_frame_presence(
-                    tracks_for_plot, snapshot_df, n_fr, cutoff
-                )
-                n_cells = fs["label_id"].nunique() if len(fs) > 0 else 0
+                trajectory_figure, _ = plot_snapshot_trajectories(filtered_tracks, filtered_snapshot, title=f"{file_stem} \u2014 trajectories \u2265{cutoff_percentage}% frames (n={num_filtered_cells} cells)")
+                trajectory_figure.savefig(str(work_dir / f"snapshot_trajectories_{cutoff_percentage}pct.pdf"), bbox_inches="tight")
+                plt.close(trajectory_figure)
 
-                filt_summary, filt_cats = compute_snapshot_percentages(fs, n_fr)
-                fig_pct, _ = plot_snapshot_percentages(
-                    filt_summary,
-                    filt_cats,
-                    title=f"{stem} — ≥{cutoff}% frames (n={n_cells} cells)",
-                )
-                pct_pdf = work_dir / f"percentages_snapshot_{cutoff}pct.pdf"
-                fig_pct.savefig(str(pct_pdf), bbox_inches="tight")
-                plt.close(fig_pct)
-                filt_summary.to_csv(
-                    work_dir / f"percentages_snapshot_{cutoff}pct.csv",
-                    index=False,
-                )
+                timeline_figure, _ = plot_snapshot_cell_timelines(filtered_snapshot, tracks_dataframe=filtered_tracks, title=f"{file_stem} \u2014 cell timelines \u2265{cutoff_percentage}% frames (n={num_filtered_cells} cells)")
+                timeline_figure.savefig(str(work_dir / f"snapshot_timelines_{cutoff_percentage}pct.pdf"), bbox_inches="tight")
+                plt.close(timeline_figure)
 
-                fig_traj, _ = plot_snapshot_trajectories(
-                    ft,
-                    fs,
-                    title=f"{stem} — trajectories ≥{cutoff}% frames (n={n_cells} cells)",
-                )
-                traj_pdf = work_dir / f"snapshot_trajectories_{cutoff}pct.pdf"
-                fig_traj.savefig(str(traj_pdf), bbox_inches="tight")
-                plt.close(fig_traj)
-
-                # Timeline: one row per cell, coloured by category at each frame
-                fig_tl, _ = plot_snapshot_cell_timelines(
-                    fs,
-                    tracks_df=ft,
-                    title=f"{stem} — cell timelines ≥{cutoff}% frames (n={n_cells} cells)",
-                )
-                tl_pdf = work_dir / f"snapshot_timelines_{cutoff}pct.pdf"
-                fig_tl.savefig(str(tl_pdf), bbox_inches="tight")
-                plt.close(fig_tl)
-        summary_df.to_csv(summary_csv, index=False)
-        fig.savefig(str(plot_pdf), bbox_inches="tight")
-        plt.close(fig)
+        summary_dataframe.to_csv(summary_csv_path, index=False)
+        summary_figure.savefig(str(summary_pdf_path), bbox_inches="tight")
+        plt.close(summary_figure)
         self._set_progress(100, fmt=f"{mode.capitalize()} analysis saved")
-        self._append_log(
-            f"[OK] Saved {mode} outputs -> {summary_csv.name}, "
-            f"{plot_pdf.name}, plus cutoff plots at 30/40/50/60%"
-        )
+        self._append_log(f"[OK] Saved {mode} outputs -> {summary_csv_path.name}, {summary_pdf_path.name}, plus cutoff plots at 30/40/50/60%")
 
-        tracks_csv = work_dir / "trackmate_tracks.csv"
-        tracks_df = (
-            pd.read_csv(tracks_csv)
-            if tracks_csv.exists()
-            else pd.DataFrame(
-                columns=["track_id", "t", "y", "x", "quality"]
-            )
-        )
-        if len(tracks_df) > 0:
-            tracks_by_cell = tracks_df.sort_values(["track_id", "t"]).copy()
+        tracks_dataframe = pd.read_csv(tracks_csv_path) if tracks_csv_path.exists() else pd.DataFrame(columns=["track_id", "t", "y", "x", "quality"])
+        if len(tracks_dataframe) > 0:
+            tracks_by_cell = tracks_dataframe.sort_values(["track_id", "t"]).copy()
             tracks_by_cell["cell_id"] = tracks_by_cell["track_id"].astype(int) + 1
             tracks_by_cell["frame"] = tracks_by_cell["t"].astype(int)
-            tracks_by_cell_csv = work_dir / "trackmate_tracks_by_cell.csv"
-            tracks_by_cell.to_csv(tracks_by_cell_csv, index=False)
-            self._append_log(
-                f"[OK] Saved plot-ready tracks -> {tracks_by_cell_csv.name}"
-            )
+            tracks_by_cell_path = work_dir / "trackmate_tracks_by_cell.csv"
+            tracks_by_cell.to_csv(tracks_by_cell_path, index=False)
+            self._append_log(f"[OK] Saved plot-ready tracks -> {tracks_by_cell_path.name}")
 
-        result = {
-            "filename": tiff_path.name,
-            "analysis_mode": mode,
-            "n_frames": n_fr,
-            "n_tracked_cells": int(tracks_df["track_id"].nunique())
-            if len(tracks_df) > 0
-            else 0,
-        }
+        summary_record = {"filename": tiff_path.name, "analysis_mode": mode, "n_frames": num_frames, "n_tracked_cells": int(tracks_dataframe["track_id"].nunique()) if len(tracks_dataframe) > 0 else 0}
         if mode == "persistent":
-            for fn in fluor_names:
-                result[f"n_{fn}"] = int((assignments_df["fate"] == fn).sum())
-                result[f"final_pct_{fn}"] = float(summary_df[f"{fn}_pct"].iloc[-1])
-            result["n_negative"] = int(
-                (assignments_df["fate"] == "negative").sum()
-            )
-            result["final_total_pct"] = float(
-                summary_df["total_positive_pct"].iloc[-1]
-            )
+            for fluorophore_name in fluorophore_names:
+                summary_record[f"n_{fluorophore_name}"] = int((assignments_dataframe["fate"] == fluorophore_name).sum())
+                summary_record[f"final_pct_{fluorophore_name}"] = float(summary_dataframe[f"{fluorophore_name}_pct"].iloc[-1])
+            summary_record["n_negative"] = int((assignments_dataframe["fate"] == "negative").sum())
+            summary_record["final_total_pct"] = float(summary_dataframe["total_positive_pct"].iloc[-1])
         else:
-            last = snapshot_df[snapshot_df["frame"] == n_fr - 1]
-            for cat in sorted(snapshot_df["category"].unique()):
-                result[f"final_pct_{cat}"] = (
-                    100.0 * (last["category"] == cat).sum() / max(len(last), 1)
-                )
+            last_frame_snapshot = snapshot_dataframe[snapshot_dataframe["frame"] == num_frames - 1]
+            for category in sorted(snapshot_dataframe["category"].unique()):
+                summary_record[f"final_pct_{category}"] = 100.0 * (last_frame_snapshot["category"] == category).sum() / max(len(last_frame_snapshot), 1)
 
-        run_data = {
-            "bf_image": bf_image,
-            "fluor_images": fluor_images,
-            "masks_stack": tifffile.imread(
-                str(work_dir / "masks_stack.tiff")
-            ).astype(np.uint16)
-            if (work_dir / "masks_stack.tiff").exists()
-            else np.zeros_like(linked_labels, dtype=np.uint16),
-            "linked_labels": linked_labels,
-            "positive_cell_labels": positive_cell_labels,
-            "locked_labels": locked_labels,
-            "tracks_df": tracks_df,
-            "mode": mode,
-        }
-        return result, run_data
+        masks_stack_path = work_dir / "masks_stack.tiff"
+        viewer_data = {"bf_image": brightfield_stack, "fluor_images": fluorophore_stacks, "masks_stack": tifffile.imread(str(masks_stack_path)).astype(np.uint16) if masks_stack_path.exists() else np.zeros_like(linked_labels, dtype=np.uint16), "linked_labels": linked_labels, "positive_cell_labels": positive_cell_labels, "locked_labels": locked_labels, "tracks_df": tracks_dataframe, "mode": mode}
+        return summary_record, viewer_data
 
     def _run_segmentation_only(self):
-        """Run only Cellpose segmentation and save masks."""
+        """Run only Cellpose segmentation and write masks for the active image."""
         self._set_buttons_enabled(False)
         try:
             tiff_path, _, work_dir = self._resolve_single_run_paths()
-            out = self._run_segmentation_stage(tiff_path, work_dir)
-            self._show_in_viewer(
-                {
-                    "bf_image": out["bf_image"],
-                    "fluor_images": out["fluor_images"],
-                    "masks_stack": out["masks_stack"],
-                    "linked_labels": np.zeros_like(
-                        out["masks_stack"], dtype=np.uint32
-                    ),
-                    "positive_cell_labels": {},
-                    "locked_labels": None,
-                    "tracks_df": pd.DataFrame(
-                        columns=["track_id", "t", "y", "x", "quality"]
-                    ),
-                    "mode": "snapshot",
-                }
-            )
-        except Exception as e:
+            segmentation_outputs = self._run_segmentation_stage(tiff_path, work_dir)
+            self._show_in_viewer({
+                "bf_image": segmentation_outputs["bf_image"],
+                "fluor_images": segmentation_outputs["fluor_images"],
+                "masks_stack": segmentation_outputs["masks_stack"],
+                "linked_labels": np.zeros_like(segmentation_outputs["masks_stack"], dtype=np.uint32),
+                "positive_cell_labels": {},
+                "locked_labels": None,
+                "tracks_df": pd.DataFrame(columns=["track_id", "t", "y", "x", "quality"]),
+                "mode": "snapshot",
+            })
+        except Exception as exception:
             self._set_progress(0, fmt="Error")
-            self._append_log(f"[ERROR] {type(e).__name__}: {e}")
+            LOGGER.exception("Segmentation-only stage failed")
+            self._append_log(f"[ERROR] {type(exception).__name__}: {exception}\n{traceback.format_exc()}")
         finally:
             self._set_buttons_enabled(True)
 
     def _run_tracking_only(self):
-        """Run only TrackMate tracking from previously saved masks."""
+        """Run only TrackMate tracking using masks already saved in the working directory."""
         self._set_buttons_enabled(False)
         try:
             tiff_path, _, work_dir = self._resolve_single_run_paths()
-            bf_image, fluor_images, _, _ = self._load_image_channels(tiff_path)
-            out = self._run_tracking_stage(work_dir)
+            brightfield_stack, fluorophore_stacks, _, _ = self._load_image_channels(tiff_path)
+            tracking_outputs = self._run_tracking_stage(work_dir)
             masks_path = work_dir / "masks_stack.tiff"
-            masks_stack = (
-                tifffile.imread(str(masks_path)).astype(np.uint16)
-                if masks_path.exists()
-                else np.zeros_like(out["linked_labels"], dtype=np.uint16)
-            )
-            self._show_in_viewer(
-                {
-                    "bf_image": bf_image,
-                    "fluor_images": fluor_images,
-                    "masks_stack": masks_stack,
-                    "linked_labels": out["linked_labels"],
-                    "positive_cell_labels": {},
-                    "locked_labels": None,
-                    "tracks_df": out["tracks_df"],
-                    "mode": "snapshot",
-                }
-            )
-        except Exception as e:
+            masks_stack = tifffile.imread(str(masks_path)).astype(np.uint16) if masks_path.exists() else np.zeros_like(tracking_outputs["linked_labels"], dtype=np.uint16)
+            self._show_in_viewer({
+                "bf_image": brightfield_stack,
+                "fluor_images": fluorophore_stacks,
+                "masks_stack": masks_stack,
+                "linked_labels": tracking_outputs["linked_labels"],
+                "positive_cell_labels": {},
+                "locked_labels": None,
+                "tracks_df": tracking_outputs["tracks_df"],
+                "mode": "snapshot",
+            })
+        except Exception as exception:
             self._set_progress(0, fmt="Error")
-            self._append_log(f"[ERROR] {type(e).__name__}: {e}")
+            LOGGER.exception("Tracking-only stage failed")
+            self._append_log(f"[ERROR] {type(exception).__name__}: {exception}\n{traceback.format_exc()}")
         finally:
             self._set_buttons_enabled(True)
 
     def _run_persistent_analysis(self):
-        """Run persistent analysis from saved tracking outputs."""
+        """Run persistent fate assignment from previously saved tracking outputs."""
         self._set_buttons_enabled(False)
         try:
             tiff_path, _, work_dir = self._resolve_single_run_paths()
-            result, run_data = self._run_analysis_stage(
-                tiff_path, work_dir, mode="persistent"
-            )
-            self._results.append(result)
+            summary_record, viewer_data = self._run_analysis_stage(tiff_path, work_dir, mode="persistent")
+            self._results.append(summary_record)
             self._results_df = pd.DataFrame(self._results)
-            self._show_in_viewer(run_data)
-        except Exception as e:
+            self._show_in_viewer(viewer_data)
+        except Exception as exception:
             self._set_progress(0, fmt="Error")
-            self._append_log(f"[ERROR] {type(e).__name__}: {e}")
+            LOGGER.exception("Persistent-analysis stage failed")
+            self._append_log(f"[ERROR] {type(exception).__name__}: {exception}\n{traceback.format_exc()}")
         finally:
             self._set_buttons_enabled(True)
 
     def _run_snapshot_analysis(self):
-        """Run snapshot analysis from saved tracking outputs."""
+        """Run snapshot fate assignment from previously saved tracking outputs."""
         self._set_buttons_enabled(False)
         try:
             tiff_path, _, work_dir = self._resolve_single_run_paths()
-            result, run_data = self._run_analysis_stage(
-                tiff_path, work_dir, mode="snapshot"
-            )
-            self._results.append(result)
+            summary_record, viewer_data = self._run_analysis_stage(tiff_path, work_dir, mode="snapshot")
+            self._results.append(summary_record)
             self._results_df = pd.DataFrame(self._results)
-            self._show_in_viewer(run_data)
-        except Exception as e:
+            self._show_in_viewer(viewer_data)
+        except Exception as exception:
             self._set_progress(0, fmt="Error")
-            self._append_log(f"[ERROR] {type(e).__name__}: {e}")
+            LOGGER.exception("Snapshot-analysis stage failed")
+            self._append_log(f"[ERROR] {type(exception).__name__}: {exception}\n{traceback.format_exc()}")
         finally:
             self._set_buttons_enabled(True)
 
     def _run_all_single_image(self):
-        """Run segmentation + tracking + both analyses on one image."""
+        """Run segmentation, tracking and both analyses on the active image."""
         self._set_buttons_enabled(False)
         try:
             tiff_path, _, work_dir = self._resolve_single_run_paths()
             self._append_log("[INFO] Running full pipeline (all stages)...")
             self._run_segmentation_stage(tiff_path, work_dir)
             self._run_tracking_stage(work_dir)
-
-            persistent_result, persistent_data = self._run_analysis_stage(
-                tiff_path, work_dir, mode="persistent"
-            )
-            snapshot_result, _ = self._run_analysis_stage(
-                tiff_path, work_dir, mode="snapshot"
-            )
-
-            self._results.extend([persistent_result, snapshot_result])
+            persistent_summary, persistent_viewer_data = self._run_analysis_stage(tiff_path, work_dir, mode="persistent")
+            snapshot_summary, _ = self._run_analysis_stage(tiff_path, work_dir, mode="snapshot")
+            self._results.extend([persistent_summary, snapshot_summary])
             self._results_df = pd.DataFrame(self._results)
-            self._show_in_viewer(persistent_data)
+            self._show_in_viewer(persistent_viewer_data)
             self._append_log(f"[OK] Full pipeline complete: {tiff_path.name}")
-        except Exception as e:
+        except Exception as exception:
             self._set_progress(0, fmt="Error")
-            self._append_log(f"[ERROR] {type(e).__name__}: {e}")
+            LOGGER.exception("Full single-image pipeline failed")
+            self._append_log(f"[ERROR] {type(exception).__name__}: {exception}\n{traceback.format_exc()}")
         finally:
             self._set_buttons_enabled(True)
 
     # -- viewer -------------------------------------------------------------
 
-    def _show_in_viewer(self, data: dict):
-        """Populate the napari viewer with all pipeline outputs."""
+    def _show_in_viewer(self, viewer_data: dict):
+        """Populate the napari viewer with the pipeline outputs from one image."""
         self.viewer.layers.clear()
+        self.viewer.add_image(viewer_data["bf_image"], name="Brightfield", colormap="gray", blending="translucent", opacity=0.7)
 
-        self.viewer.add_image(
-            data["bf_image"],
-            name="Brightfield",
-            colormap="gray",
-            blending="translucent",
-            opacity=0.7,
-        )
+        colour_assignments = assign_colours(list(viewer_data["fluor_images"].keys()))
+        for fluorophore_name, fluorophore_image in viewer_data["fluor_images"].items():
+            napari_colormap = colour_assignments[fluorophore_name]["napari"]
+            self.viewer.add_image(fluorophore_image, name=f"{fluorophore_name} fluorescence", colormap=napari_colormap, blending="additive")
 
-        colour_assignments = assign_colours(list(data["fluor_images"].keys()))
-        for fn, img in data["fluor_images"].items():
-            napari_cmap = colour_assignments[fn]["napari"]
-            self.viewer.add_image(
-                img, name=f"{fn} fluorescence",
-                colormap=napari_cmap, blending="additive",
-            )
+        for fluorophore_name, positive_label_image in viewer_data["positive_cell_labels"].items():
+            add_coloured_labels(self.viewer, positive_label_image, name=f"{fluorophore_name} positive cells", base_colour=get_fluor_base_colour(fluorophore_name), opacity=0.35)
 
-        for fn, lbl in data["positive_cell_labels"].items():
-            add_coloured_labels(
-                self.viewer, lbl, name=f"{fn} positive cells",
-                base_colour=get_fluor_base_colour(fn), opacity=0.35
-            )
+        add_coloured_labels(self.viewer, viewer_data["linked_labels"], name="Linked labels", base_colour="gold", opacity=0.20)
 
-        add_coloured_labels(
-            self.viewer, data["linked_labels"], name="Linked labels",
-            base_colour="gold", opacity=0.20
-        )
+        if viewer_data["mode"] == "persistent" and viewer_data["locked_labels"] is not None:
+            for fluorophore_name, locked_label_image in viewer_data["locked_labels"].items():
+                add_coloured_labels(self.viewer, locked_label_image, name=f"Persistent {fluorophore_name}", base_colour=get_fluor_base_colour(fluorophore_name), opacity=0.60)
 
-        if data["mode"] == "persistent" and data["locked_labels"] is not None:
-            for fn, lbl in data["locked_labels"].items():
-                add_coloured_labels(
-                    self.viewer, lbl, name=f"Persistent {fn}",
-                    base_colour=get_fluor_base_colour(fn), opacity=0.60
-                )
+        add_coloured_labels(self.viewer, viewer_data["masks_stack"].astype(np.uint32), name="Cellpose masks", base_colour="slategray", opacity=0.15)
 
-        add_coloured_labels(
-            self.viewer, data["masks_stack"].astype(np.uint32),
-            name="Cellpose masks",
-            base_colour="slategray", opacity=0.15,
-        )
-
-        tdf = data["tracks_df"]
-        if len(tdf) > 0:
-            track_arr = (
-                tdf[["track_id", "t", "y", "x"]]
-                .sort_values(["track_id", "t"])
-                .to_numpy(dtype=float)
-            )
-            self.viewer.add_tracks(
-                track_arr, name="Tracks", tail_length=50, opacity=0.8
-            )
+        tracks_dataframe = viewer_data["tracks_df"]
+        if len(tracks_dataframe) > 0:
+            tracks_array = tracks_dataframe[["track_id", "t", "y", "x"]].sort_values(["track_id", "t"]).to_numpy(dtype=float)
+            self.viewer.add_tracks(tracks_array, name="Tracks", tail_length=50, opacity=0.8)
 
     # -- button handlers ----------------------------------------------------
 
@@ -1025,40 +826,32 @@ class FluoroFateApp:
             self._append_log("[WARN] No .tif / .tiff files found in folder.")
             return
 
-        n = len(tiff_files)
-        self._append_log(f"[INFO] Batch: {n} files in {folder.name}")
+        num_files = len(tiff_files)
+        self._append_log(f"[INFO] Batch: {num_files} files in {folder.name}")
         batch_results: List[dict] = []
 
         self._set_buttons_enabled(False)
         try:
-            for idx, fp in enumerate(tiff_files):
-                self._append_log(
-                    f"--- File {idx + 1}/{n}: {fp.name} ---"
-                )
+            for file_index, tiff_file_path in enumerate(tiff_files):
+                self._append_log(f"--- File {file_index + 1}/{num_files}: {tiff_file_path.name} ---")
                 try:
-                    work_dir = out_dir / fp.stem
+                    work_dir = out_dir / tiff_file_path.stem
                     work_dir.mkdir(parents=True, exist_ok=True)
-                    self._run_segmentation_stage(fp, work_dir)
+                    self._run_segmentation_stage(tiff_file_path, work_dir)
                     self._run_tracking_stage(work_dir)
-                    mode = str(self.analysis_panel.analysis_mode.value)
-                    result, _ = self._run_analysis_stage(fp, work_dir, mode)
-                    batch_results.append(result)
-                except Exception as e:
-                    batch_results.append(
-                        {"filename": fp.name, "error": str(e)}
-                    )
-                    self._append_log(
-                        f"  FAILED: {type(e).__name__}: {e}"
-                    )
-                self._set_progress(
-                    idx + 1, maximum=n,
-                    fmt=f"Files: {idx + 1}/{n}",
-                )
+                    analysis_mode = str(self.analysis_panel.analysis_mode.value)
+                    summary_record, _ = self._run_analysis_stage(tiff_file_path, work_dir, analysis_mode)
+                    batch_results.append(summary_record)
+                except Exception as exception:
+                    batch_results.append({"filename": tiff_file_path.name, "error": str(exception)})
+                    LOGGER.exception("Batch file %s failed", tiff_file_path.name)
+                    self._append_log(f"  FAILED: {type(exception).__name__}: {exception}\n{traceback.format_exc()}")
+                self._set_progress(file_index + 1, maximum=num_files, fmt=f"Files: {file_index + 1}/{num_files}")
 
             self._results.extend(batch_results)
             self._results_df = pd.DataFrame(self._results)
-            summary_path = out_dir / "batch_summary.csv"
             out_dir.mkdir(parents=True, exist_ok=True)
+            summary_path = out_dir / "batch_summary.csv"
             self._results_df.to_csv(summary_path, index=False)
             self._append_log(f"[OK] Batch done. Summary -> {summary_path}")
         finally:

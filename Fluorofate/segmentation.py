@@ -1,185 +1,158 @@
-"""Cellpose and fluorescence segmentation functions."""
+"""Cellpose and fluorescence segmentation functions.
 
+Two top-level helpers:
+
+* :func:`cellpose_live_segmentation` — segment a brightfield time-lapse
+  frame-by-frame using Cellpose, with optional GUI progress callback.
+* :func:`segment_fluorescence` — Gaussian blur + per-frame thresholding
+  + connected-component labelling for one or more fluorescence channels.
+
+Status messages are emitted via the standard :mod:`logging` module so
+they can be routed to a GUI log widget or a log file.
+"""
+
+import logging
 from pathlib import Path
 
 import numpy as np
 from cellpose import io, models
-from skimage.filters import (
-    gaussian,
-    threshold_mean,
-    threshold_minimum,
-    threshold_otsu,
-    threshold_triangle,
-    threshold_yen,
-)
+from skimage.filters import gaussian, threshold_mean, threshold_minimum, threshold_otsu, threshold_triangle, threshold_yen
 from skimage.measure import label
 
+LOGGER = logging.getLogger(__name__)
 
-def cellpose_live_segmentation(
-    stack,
-    diameter=None,
-    flow_threshold=0.4,
-    cellprob_threshold=0.0,
-    min_size=15,
-    model_type="cpsam",
-    custom_model_path=None,
-    gpu=True,
-    progress_callback=None,
-):
-    """Segment a brightfield stack frame-by-frame with Cellpose.
+THRESHOLD_FUNCTIONS = {"mean": threshold_mean, "minimum": threshold_minimum, "yen": threshold_yen, "otsu": threshold_otsu, "triangle": threshold_triangle}
+
+
+def cellpose_live_segmentation(brightfield_stack, diameter=None, flow_threshold=0.4, cellprob_threshold=0.0, min_size=15, model_type="cpsam", custom_model_path=None, gpu=True, progress_callback=None):
+    """Segment a brightfield image stack frame-by-frame with Cellpose.
+
+    If ``diameter`` is ``None`` it is estimated from the cells detected
+    in the first frame; if the first frame contains no cells the value
+    falls back to 30 pixels and a warning is logged.
 
     Parameters
     ----------
-    stack : ndarray or str or Path
-        Brightfield image stack of shape (n_frames, H, W), a single 2-D
-        image, or a file path that Cellpose can read.
-    diameter : float or None
-        Expected cell diameter in pixels. If None, estimated automatically
-        from the first frame.
-    flow_threshold : float
-        Cellpose flow threshold (lower = stricter boundaries).
-    cellprob_threshold : float
-        Cellpose cell-probability threshold (higher = fewer cells).
-    min_size : int
+    brightfield_stack : numpy.ndarray, str, or pathlib.Path
+        Brightfield image stack of shape ``(n_frames, H, W)``, a single
+        2-D image of shape ``(H, W)``, or a file path that Cellpose can
+        read.
+    diameter : float or None, default None
+        Expected cell diameter in pixels. If ``None``, estimated
+        automatically from the first frame.
+    flow_threshold : float, default 0.4
+        Cellpose flow-error threshold (lower = stricter cell boundaries).
+    cellprob_threshold : float, default 0.0
+        Cellpose cell-probability threshold (higher = fewer cells kept).
+    min_size : int, default 15
         Minimum cell area in pixels; smaller objects are removed.
-    model_type : str
-        Built-in Cellpose model name (e.g. "cpsam", "cyto3", "nuclei").
-        Ignored when *custom_model_path* is provided.
-    custom_model_path : str or Path or None
-        Path to a user-trained Cellpose model file. Overrides *model_type*.
-    gpu : bool
+    model_type : str, default "cpsam"
+        Built-in Cellpose model name (e.g. ``"cpsam"``, ``"cyto3"``,
+        ``"nuclei"``). Ignored when ``custom_model_path`` is provided.
+    custom_model_path : str, pathlib.Path or None, default None
+        Path to a user-trained Cellpose model file. Overrides
+        ``model_type`` when given.
+    gpu : bool, default True
         Whether to use GPU acceleration.
-    progress_callback : callable or None
-        Called as ``progress_callback(current_frame, total_frames)`` after
-        each frame so the GUI can update a progress bar.
+    progress_callback : callable or None, default None
+        Called as ``progress_callback(current_frame, total_frames)``
+        after each frame so a GUI can update its progress bar.
 
     Returns
     -------
-    ndarray, uint16
-        Segmentation masks with the same spatial shape as the input. If the
-        input was a single 2-D image, a 2-D array is returned; otherwise
-        a 3-D stack of shape (n_frames, H, W).
+    numpy.ndarray, dtype uint16
+        Segmentation masks with the same spatial shape as the input. If
+        the input was a single 2-D image, a 2-D array is returned;
+        otherwise a 3-D stack of shape ``(n_frames, H, W)``.
     """
-    if isinstance(stack, (str, Path)):
-        stack = io.imread(stack)
-    if stack.ndim == 2:
-        stack = stack[np.newaxis, :, :]
+    if isinstance(brightfield_stack, (str, Path)):
+        brightfield_stack = io.imread(brightfield_stack)
+    if brightfield_stack.ndim == 2:
+        brightfield_stack = brightfield_stack[np.newaxis, :, :]
 
     if custom_model_path:
-        print(f"[Cellpose] Loading custom model: {custom_model_path}")
-        model = models.CellposeModel(
-            gpu=gpu, pretrained_model=str(custom_model_path)
-        )
+        LOGGER.info("Cellpose: loading custom model from %s", custom_model_path)
+        cellpose_model = models.CellposeModel(gpu=gpu, pretrained_model=str(custom_model_path))
     else:
-        print(f"[Cellpose] Loading model: {model_type}")
-        model = models.CellposeModel(gpu=gpu, model_type=model_type)
+        LOGGER.info("Cellpose: loading built-in model %s", model_type)
+        cellpose_model = models.CellposeModel(gpu=gpu, model_type=model_type)
 
     if diameter is None:
-        first_frame_masks, _, _ = model.eval(
-            stack[0], diameter=30, flow_threshold=flow_threshold, min_size=min_size
-        )
+        first_frame_masks, _, _ = cellpose_model.eval(brightfield_stack[0], diameter=30, flow_threshold=flow_threshold, min_size=min_size)
         if first_frame_masks.max() > 0:
-            areas = [
-                np.sum(first_frame_masks == i)
-                for i in range(1, min(first_frame_masks.max() + 1, 50))
-            ]
-            diameter = 2 * np.sqrt((np.median(areas) if areas else 700) / np.pi)
+            cell_areas = [int(np.sum(first_frame_masks == cell_id)) for cell_id in range(1, min(first_frame_masks.max() + 1, 50))]
+            diameter = 2 * np.sqrt((np.median(cell_areas) if cell_areas else 700) / np.pi)
+            LOGGER.info("Cellpose: estimated diameter from first frame = %.1f px", diameter)
         else:
             diameter = 30.0
-        print(f"[Cellpose] Estimated diameter: {diameter:.1f} px")
+            LOGGER.warning("Cellpose: no cells detected in first frame; falling back to default diameter = %.1f px", diameter)
 
-    n_frames = stack.shape[0]
-    out = np.zeros(stack.shape, dtype=np.uint16)
-    print(
-        f"[Cellpose] Segmenting {n_frames} frame(s) "
-        f"(diameter={diameter:.1f}, flow_thresh={flow_threshold}, "
-        f"cellprob_thresh={cellprob_threshold}, min_size={min_size})..."
-    )
-
-    for frame_index in range(n_frames):
-        frame_masks, _, _ = model.eval(
-            stack[frame_index],
-            diameter=diameter,
-            flow_threshold=flow_threshold,
-            cellprob_threshold=cellprob_threshold,
-            min_size=min_size,
-            resample=True,
-        )
-        n_cells = frame_masks.max()
-        out[frame_index] = frame_masks.astype(np.uint16)
-        print(f"[Cellpose] Frame {frame_index + 1}/{n_frames} — {n_cells} cell(s) detected")
+    num_frames = brightfield_stack.shape[0]
+    masks_stack = np.zeros(brightfield_stack.shape, dtype=np.uint16)
+    LOGGER.info("Cellpose: segmenting %d frame(s) (diameter=%.1f, flow_threshold=%.2f, cellprob_threshold=%.2f, min_size=%d)", num_frames, diameter, flow_threshold, cellprob_threshold, min_size)
+    for frame_index in range(num_frames):
+        frame_masks, _, _ = cellpose_model.eval(brightfield_stack[frame_index], diameter=diameter, flow_threshold=flow_threshold, cellprob_threshold=cellprob_threshold, min_size=min_size, resample=True)
+        masks_stack[frame_index] = frame_masks.astype(np.uint16)
+        LOGGER.info("Cellpose: frame %d/%d — %d cell(s) detected", frame_index + 1, num_frames, int(frame_masks.max()))
         if progress_callback is not None:
-            progress_callback(frame_index + 1, n_frames)
+            progress_callback(frame_index + 1, num_frames)
 
-    print(f"[Cellpose] Segmentation complete. Processed {n_frames} frame(s).")
-    return out[0] if n_frames == 1 else out
+    LOGGER.info("Cellpose: segmentation complete (%d frame(s))", num_frames)
+    return masks_stack[0] if num_frames == 1 else masks_stack
 
 
-def segment_fluorescence(stacks, blur_sigma=1.0, threshold_method="otsu"):
+def segment_fluorescence(fluorescence_stacks, blur_sigma=1.0, threshold_method="otsu"):
     """Segment fluorescence channels by Gaussian blur + per-frame thresholding.
 
-    For each fluorophore stack:
-      1. Apply Gaussian blur.
-      2. Compute a separate threshold for each frame independently
-         (handles signal drift over time).
-      3. Binarise: pixels above that frame's threshold = "positive".
-      4. Label connected components of fluorescence-positive pixels.
+    Each fluorophore stack is processed independently: a Gaussian blur is
+    applied, then a separate threshold is computed for each frame
+    (handles signal drift over time), pixels above that threshold are
+    flagged as positive, and connected components of positive pixels are
+    labelled.
 
     Parameters
     ----------
-    stacks : dict[str, ndarray]
-        {fluorophore_name: array of shape (n_frames, H, W)}.
-    blur_sigma : float
-        Sigma for Gaussian smoothing.
-    threshold_method : str or dict[str, str]
-        Thresholding algorithm name(s). A single string applies to all
-        channels; a dict maps each channel name to its own method.
-        Supported: "mean", "minimum", "yen", "otsu", "triangle".
+    fluorescence_stacks : dict[str, numpy.ndarray]
+        ``{fluorophore_name: array of shape (n_frames, H, W)}``.
+    blur_sigma : float, default 1.0
+        Sigma for Gaussian smoothing before thresholding.
+    threshold_method : str or dict[str, str], default "otsu"
+        Thresholding algorithm. A single string applies the same method
+        to every channel; a dict maps each channel name to its own
+        method. Supported: ``"mean", "minimum", "yen", "otsu", "triangle"``.
 
     Returns
     -------
-    result : dict
-        Top-level keys: "threshold_methods", "blur_sigma", plus one key
-        per fluorophore name. Each fluorophore entry is a dictionary with:
-        - "blurred"             : ndarray (n_frames, H, W) — smoothed stack
-        - "thresholds_per_frame": ndarray (n_frames,) — threshold for each frame
-        - "positive"            : ndarray (n_frames, H, W) bool — binary mask
-        - "positive_labels"     : ndarray (n_frames, H, W) uint32 — labelled blobs
+    dict
+        Top-level keys ``"threshold_methods"`` (the resolved per-channel
+        method map) and ``"blur_sigma"``, plus one key per fluorophore.
+        Each fluorophore entry is a dict with:
+
+        * ``"blurred"``              — ndarray (n_frames, H, W) smoothed stack
+        * ``"thresholds_per_frame"`` — ndarray (n_frames,) threshold per frame
+        * ``"positive"``             — ndarray (n_frames, H, W) bool binary mask
+        * ``"positive_labels"``      — ndarray (n_frames, H, W) uint32 blob labels
     """
-    threshold_functions = {
-        "mean": threshold_mean,
-        "minimum": threshold_minimum,
-        "yen": threshold_yen,
-        "otsu": threshold_otsu,
-        "triangle": threshold_triangle,
-    }
     if isinstance(threshold_method, str):
-        threshold_map = {name: threshold_method.lower() for name in stacks}
+        threshold_method_per_channel = {fluorophore_name: threshold_method.lower() for fluorophore_name in fluorescence_stacks}
     else:
-        threshold_map = {name: str(threshold_method.get(name, "otsu")).lower() for name in stacks}
+        threshold_method_per_channel = {fluorophore_name: str(threshold_method.get(fluorophore_name, "otsu")).lower() for fluorophore_name in fluorescence_stacks}
 
-    result = {"threshold_methods": threshold_map, "blur_sigma": blur_sigma}
-    for channel_name, stack in stacks.items():
-        threshold_method_name = threshold_map[channel_name]
-        if threshold_method_name not in threshold_functions:
-            raise ValueError(f"Unsupported threshold for '{channel_name}': {threshold_method_name}")
-        threshold_function = threshold_functions[threshold_method_name]
-        blurred = np.stack([gaussian(frame, sigma=blur_sigma, preserve_range=True) for frame in stack], axis=0)
-
-        num_frames = blurred.shape[0]
+    result = {"threshold_methods": threshold_method_per_channel, "blur_sigma": blur_sigma}
+    for fluorophore_name, fluorescence_stack in fluorescence_stacks.items():
+        method_name = threshold_method_per_channel[fluorophore_name]
+        if method_name not in THRESHOLD_FUNCTIONS:
+            raise ValueError(f"Unsupported threshold method '{method_name}' for channel '{fluorophore_name}'. Choose one of {sorted(THRESHOLD_FUNCTIONS)}.")
+        threshold_function = THRESHOLD_FUNCTIONS[method_name]
+        blurred_stack = np.stack([gaussian(frame, sigma=blur_sigma, preserve_range=True) for frame in fluorescence_stack], axis=0)
+        num_frames = blurred_stack.shape[0]
         thresholds_per_frame = np.zeros(num_frames)
-        positive = np.zeros_like(blurred, dtype=bool)
-        positive_labels = np.zeros(blurred.shape, dtype=np.uint32)
+        positive_mask_stack = np.zeros_like(blurred_stack, dtype=bool)
+        positive_label_stack = np.zeros(blurred_stack.shape, dtype=np.uint32)
         for frame_index in range(num_frames):
-            frame_threshold = threshold_function(blurred[frame_index])
+            frame_threshold = threshold_function(blurred_stack[frame_index])
             thresholds_per_frame[frame_index] = frame_threshold
-            positive[frame_index] = blurred[frame_index] > frame_threshold
-            positive_labels[frame_index] = label(positive[frame_index]).astype(np.uint32)
-
-        result[channel_name] = {
-            "blurred": blurred,
-            "thresholds_per_frame": thresholds_per_frame,
-            "positive": positive,
-            "positive_labels": positive_labels,
-        }
+            positive_mask_stack[frame_index] = blurred_stack[frame_index] > frame_threshold
+            positive_label_stack[frame_index] = label(positive_mask_stack[frame_index]).astype(np.uint32)
+        result[fluorophore_name] = {"blurred": blurred_stack, "thresholds_per_frame": thresholds_per_frame, "positive": positive_mask_stack, "positive_labels": positive_label_stack}
     return result
