@@ -30,7 +30,7 @@ from qtpy.QtWidgets import (
 )
 
 from utils import running_in_notebook
-from colours import assign_colours
+from colours import assign_colours, get_fluor_base_colour, add_coloured_labels
 from measurement import compute_cell_positivity
 from segmentation import cellpose_live_segmentation, segment_fluorescence
 from tracking import generate_trackmate_labels
@@ -968,24 +968,27 @@ class FluoroFateApp:
             )
 
         for fn, lbl in data["positive_cell_labels"].items():
-            self.viewer.add_labels(
-                lbl, name=f"{fn} positive cells", opacity=0.35
+            add_coloured_labels(
+                self.viewer, lbl, name=f"{fn} positive cells",
+                base_colour=get_fluor_base_colour(fn), opacity=0.35
             )
 
-        self.viewer.add_labels(
-            data["linked_labels"], name="Linked labels", opacity=0.20
+        add_coloured_labels(
+            self.viewer, data["linked_labels"], name="Linked labels",
+            base_colour="gold", opacity=0.20
         )
 
         if data["mode"] == "persistent" and data["locked_labels"] is not None:
             for fn, lbl in data["locked_labels"].items():
-                self.viewer.add_labels(
-                    lbl, name=f"Persistent {fn}", opacity=0.60
+                add_coloured_labels(
+                    self.viewer, lbl, name=f"Persistent {fn}",
+                    base_colour=get_fluor_base_colour(fn), opacity=0.60
                 )
 
-        self.viewer.add_labels(
-            data["masks_stack"].astype(np.uint32),
+        add_coloured_labels(
+            self.viewer, data["masks_stack"].astype(np.uint32),
             name="Cellpose masks",
-            opacity=0.15,
+            base_colour="slategray", opacity=0.15,
         )
 
         tdf = data["tracks_df"]

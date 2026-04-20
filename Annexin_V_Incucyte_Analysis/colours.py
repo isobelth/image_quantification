@@ -1,5 +1,8 @@
 """Colour inference and category colour-mapping for plots and Napari."""
 
+import colorsys
+
+import matplotlib.colors as mcolors
 import numpy as np
 from typing import Dict
 
@@ -91,3 +94,96 @@ def build_category_colormap(categories):
         rgb = np.clip(np.mean([single_rgb.get(part, np.array([0.5, 0.5, 0.5])) for part in parts], axis=0), 0, 1)
         colormap[category] = tuple(rgb.tolist())
     return colormap
+
+
+# --------------- Napari label-colouring helpers ---------------
+
+def get_fluor_base_colour(name):
+    """Map a fluorophore name to a matplotlib base colour string.
+
+    Parameters
+    ----------
+    name : str
+        Fluorophore name (e.g. "Green", "Red", "Annexin V").
+
+    Returns
+    -------
+    str
+        A matplotlib named colour (e.g. "limegreen", "red").
+    """
+    name_lower = name.lower()
+    if "green" in name_lower:
+        return "limegreen"
+    elif "red" in name_lower:
+        return "red"
+    elif "blue" in name_lower:
+        return "dodgerblue"
+    return "cyan"
+
+
+def build_direct_label_colormap(label_stack, base_colour,
+                                hue_span=0.02, sat_span=0.45, light_span=0.45,
+                                seed=0, alpha=1.0):
+    """Build a ``DirectLabelColormap`` with jittered shades keyed by actual label IDs.
+
+    Parameters
+    ----------
+    label_stack : np.ndarray
+        Integer label image (2-D, 3-D, or 4-D). Background must be 0.
+    base_colour : str
+        Any matplotlib named colour (e.g. "red", "limegreen").
+    hue_span, sat_span, light_span : float
+        Half-width of the uniform jitter applied to hue / saturation / lightness.
+    seed : int
+        RNG seed for reproducibility.
+    alpha : float
+        Alpha channel value for every label colour.
+
+    Returns
+    -------
+    DirectLabelColormap
+    """
+    from napari.utils.colormaps import DirectLabelColormap
+
+    unique_ids = np.unique(label_stack)
+    unique_ids = unique_ids[unique_ids != 0]
+    n = len(unique_ids)
+
+    colour_dict = {0: (0.0, 0.0, 0.0, 0.0)}
+    if n > 0:
+        rng = np.random.default_rng(seed)
+        r, g, b = mcolors.to_rgb(base_colour)
+        base_h, base_l, base_s = colorsys.rgb_to_hls(r, g, b)
+        hues = (base_h + rng.uniform(-hue_span, hue_span, n)) % 1.0
+        sats = np.clip(base_s + rng.uniform(-sat_span, sat_span, n), 0.20, 1.00)
+        lights = np.clip(base_l + rng.uniform(-light_span, light_span, n), 0.18, 0.88)
+        for i, lid in enumerate(unique_ids):
+            pr, pg, pb = colorsys.hls_to_rgb(float(hues[i]), float(lights[i]), float(sats[i]))
+            colour_dict[int(lid)] = (pr, pg, pb, float(alpha))
+
+    return DirectLabelColormap(color_dict=colour_dict)
+
+
+def add_coloured_labels(viewer, label_stack, name, base_colour, opacity=0.5, **kwargs):
+    """Add a labels layer with jittered shades of *base_colour*.
+
+    Convenience wrapper around :func:`build_direct_label_colormap` that
+    creates the colourmap and adds the layer in one call.
+
+    Parameters
+    ----------
+    viewer : napari.Viewer
+    label_stack : np.ndarray
+    name : str
+    base_colour : str
+    opacity : float
+    **kwargs
+        Forwarded to ``viewer.add_labels()``.
+
+    Returns
+    -------
+    napari.layers.Labels
+    """
+    cmap = build_direct_label_colormap(label_stack, base_colour)
+    return viewer.add_labels(label_stack.astype(np.int32), name=name,
+                             opacity=opacity, colormap=cmap, **kwargs)
