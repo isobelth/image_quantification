@@ -647,6 +647,12 @@ class AcinarImage:
         nuc_ch = self.nuclear_channel
         mem_ch = self.membrane_channel
 
+        n_channels = self.image.shape[1]
+        if mem_ch is not None and mem_ch >= n_channels:
+            mem_ch = None
+        if red_channel is not None and red_channel >= n_channels:
+            red_channel = None
+
         def _rescale_ch(ch_idx):
             return self._rescale_volume(self.image[:, ch_idx, :, :])
 
@@ -760,6 +766,14 @@ class AcinarImage:
         for ch in (self.c3_channel, self.edu_channel, self.mito_channel):
             if ch is not None and ch != nuclear_ch and ch != membrane_ch and ch not in extra_channels:
                 extra_channels.append(ch)
+
+        # Drop any channel index that is out of range for the loaded image so
+        # the analysis stays flexible to images with fewer channels than the
+        # configured defaults (e.g. a 3-channel image with c3_channel=3).
+        n_channels = self.image.shape[1]
+        if membrane_ch is not None and membrane_ch >= n_channels:
+            membrane_ch = None
+        extra_channels = [ch for ch in extra_channels if ch < n_channels]
 
         key = (nuclear_ch, membrane_ch,
                tuple(sorted(extra_channels)) if extra_channels else ())
@@ -1402,8 +1416,9 @@ class AcinarImage:
         # QC plot
         self._save_qc("mitochondria", [
             (self._mid_z(acinus_mask), "Acinus mask"),
-            (self._mid_z(seg_mem_exp), "Cell labels"),
-            (self._mid_z(mito_labelled), "Mito labels"),
+            (self._mid_z(seg_nuc), "Nuclei labels", True),
+            (self._mid_z(seg_mem_exp), "Cell labels", True),
+            (self._mid_z(mito_labelled), "Mito labels", True),
         ], red_channel=self.mito_channel)
 
         if self.return_volumes:
