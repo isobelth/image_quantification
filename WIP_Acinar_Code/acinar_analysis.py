@@ -1275,7 +1275,7 @@ class AcinarImage:
 
         return all_cells
 
-    def mitochondria(self, mito_min_object_size=10):
+    def mitochondria(self, mito_min_object_size=1):
         """Per-cell mitochondria count, volume, and distance from nucleus.
 
         Requires ``nuclear_mask_path``, ``membrane_mask_path``, and
@@ -1300,11 +1300,10 @@ class AcinarImage:
 
         # Rescale and label the mito mask
         mito_raw = self._load_mask_raw(self.mito_mask_path)
-        mito_labelled = label(mito_raw)
-        mito_labelled = remove_small_objects(mito_labelled, min_size=mito_min_object_size)
-        mito_labelled = self._rescale_volume(
-            mito_labelled.astype(np.uint16), scale=0.25
-        ).astype(np.int32)
+        print(mito_raw.max(), "max pixel value in raw mito mask")
+        print(mito_raw.sum(), "total mito pixels in raw mask")
+        rescaled_mito = self._load_mask_rescaled(self.mito_mask_path)
+        mito_labelled = label(rescaled_mito)
 
         # --- Segment nuclei via watershed (same as cell_nuclear_shape) ---
         cleaned_nuc = gaussian(rescaled_nuc, 1)
@@ -1325,7 +1324,6 @@ class AcinarImage:
         vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
         keep = props["area"] >= vol_thresh
         seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
-
         # --- Segment cells via membrane watershed seeded by nuclei ---
         cleaned_mem = gaussian(rescaled_mem, sigma=1)
         thresh_m = threshold_otsu(cleaned_mem)
@@ -1340,7 +1338,6 @@ class AcinarImage:
             regionprops_table(mito_labelled, properties=("label", "area"))
         )
         vx3 = px ** 3
-
         mito_rows = []
         for _, row in matching.iterrows():
             nuc_idx = int(row["nucleus_label"])
