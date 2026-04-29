@@ -130,7 +130,7 @@ class AcinarAnalysisGUI:
             nuclear_channel={"label": "Nuclear Channel", "value": 0, "min": 0, "max": 20},
             membrane_channel={"label": "Membrane Ch (-1=none)", "value": 2, "min": -1, "max": 20},
             protein_channel={"label": "Protein Ch (-1=none)", "value": -1, "min": -1, "max": 20},
-            c3_channel={"label": "C3 Ch (-1=none)", "value": 3, "min": -1, "max": 20},
+            c3_channel={"label": "C3 Ch (-1=none)", "value": -1, "min": -1, "max": 20},
             edu_channel={"label": "EdU Ch (-1=none)", "value": -1, "min": -1, "max": 20},
             mito_channel={"label": "Mito Ch (-1=none)", "value": -1, "min": -1, "max": 20},
             proximity_protein_channel={"label": "Prox. Protein Ch (-1=none)", "value": -1, "min": -1, "max": 20},

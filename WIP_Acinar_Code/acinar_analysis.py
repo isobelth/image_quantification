@@ -647,6 +647,12 @@ class AcinarImage:
         nuc_ch = self.nuclear_channel
         mem_ch = self.membrane_channel
 
+        n_channels = self.image.shape[1]
+        if mem_ch is not None and mem_ch >= n_channels:
+            mem_ch = None
+        if red_channel is not None and red_channel >= n_channels:
+            red_channel = None
+
         def _rescale_ch(ch_idx):
             return self._rescale_volume(self.image[:, ch_idx, :, :])
 
@@ -760,6 +766,14 @@ class AcinarImage:
         for ch in (self.c3_channel, self.edu_channel, self.mito_channel):
             if ch is not None and ch != nuclear_ch and ch != membrane_ch and ch not in extra_channels:
                 extra_channels.append(ch)
+
+        # Drop any channel index that is out of range for the loaded image so
+        # the analysis stays flexible to images with fewer channels than the
+        # configured defaults (e.g. a 3-channel image with c3_channel=3).
+        n_channels = self.image.shape[1]
+        if membrane_ch is not None and membrane_ch >= n_channels:
+            membrane_ch = None
+        extra_channels = [ch for ch in extra_channels if ch < n_channels]
 
         key = (nuclear_ch, membrane_ch,
                tuple(sorted(extra_channels)) if extra_channels else ())
@@ -1261,7 +1275,7 @@ class AcinarImage:
 
         return all_cells
 
-    def mitochondria(self, mito_min_object_size=10):
+    def mitochondria(self, mito_min_object_size=1):
         """Per-cell mitochondria count, volume, and distance from nucleus.
 
         Requires ``nuclear_mask_path``, ``membrane_mask_path``, and
@@ -1286,11 +1300,10 @@ class AcinarImage:
 
         # Rescale and label the mito mask
         mito_raw = self._load_mask_raw(self.mito_mask_path)
-        mito_labelled = label(mito_raw)
-        mito_labelled = remove_small_objects(mito_labelled, min_size=mito_min_object_size)
-        mito_labelled = self._rescale_volume(
-            mito_labelled.astype(np.uint16), scale=0.25
-        ).astype(np.int32)
+        print(mito_raw.max(), "max pixel value in raw mito mask")
+        print(mito_raw.sum(), "total mito pixels in raw mask")
+        rescaled_mito = self._load_mask_rescaled(self.mito_mask_path)
+        mito_labelled = label(rescaled_mito)
 
         # --- Segment nuclei via watershed (same as cell_nuclear_shape) ---
         cleaned_nuc = gaussian(rescaled_nuc, 1)
@@ -1311,7 +1324,6 @@ class AcinarImage:
         vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
         keep = props["area"] >= vol_thresh
         seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
-
         # --- Segment cells via membrane watershed seeded by nuclei ---
         cleaned_mem = gaussian(rescaled_mem, sigma=1)
         thresh_m = threshold_otsu(cleaned_mem)
@@ -1326,7 +1338,6 @@ class AcinarImage:
             regionprops_table(mito_labelled, properties=("label", "area"))
         )
         vx3 = px ** 3
-
         mito_rows = []
         for _, row in matching.iterrows():
             nuc_idx = int(row["nucleus_label"])
@@ -1402,8 +1413,9 @@ class AcinarImage:
         # QC plot
         self._save_qc("mitochondria", [
             (self._mid_z(acinus_mask), "Acinus mask"),
-            (self._mid_z(seg_mem_exp), "Cell labels"),
-            (self._mid_z(mito_labelled), "Mito labels"),
+            (self._mid_z(seg_nuc), "Nuclei labels", True),
+            (self._mid_z(seg_mem_exp), "Cell labels", True),
+            (self._mid_z(mito_labelled), "Mito labels", True),
         ], red_channel=self.mito_channel)
 
         if self.return_volumes:
