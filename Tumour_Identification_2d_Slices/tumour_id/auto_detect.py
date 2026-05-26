@@ -241,34 +241,58 @@ def process_job(row: pd.Series, output_root: Path, verbose: bool = False) -> dic
     return status
 
 
-def run(manifest_path: str | Path, verbose: bool = False) -> None:
-    """Run Stage 2 for every processable row in the manifest."""
+def run(manifest_path: str | Path, verbose: bool = False, n_workers: int = 1) -> None:
+    """Run Stage 2 for every processable row in the manifest.
+
+    ``n_workers`` controls process-based parallelism via joblib. Each worker
+    opens its own LIF/TIF, so there is no shared state. Use 1 to force
+    serial execution (useful when debugging).
+    """
     manifest_path = Path(manifest_path)
     output_root = manifest_path.parent
     manifest_df = pd.read_csv(manifest_path)
     processable = manifest_df[manifest_df["should_process"]]
-    print(f"Stage 2: processing {len(processable)} / {len(manifest_df)} jobs from {manifest_path}")
+    print(
+        f"Stage 2: processing {len(processable)} / {len(manifest_df)} jobs "
+        f"from {manifest_path} (n_workers={n_workers})"
+    )
 
-    n_ok = 0
-    for _, row in processable.iterrows():
+    rows = [row for _, row in processable.iterrows()]
+
+    def _run_one(row):
         name = row["expected_output_name"]
         try:
             status = process_job(row, output_root=output_root, verbose=verbose)
-            if status["skip_reason"]:
-                print(f"  [FAIL] {name}: {status['skip_reason']}")
-            else:
-                errors = []
-                if status["bf_error"]:
-                    errors.append(f"bf={status['bf_error']}")
-                if status["fl_error"]:
-                    errors.append(f"fl={status['fl_error']}")
-                tag = "OK  " if not errors else "WARN"
-                print(f"  [{tag}] {name}" + (f"  ({'; '.join(errors)})" if errors else ""))
-                n_ok += 1
+            return name, status, None
         except Exception as exc:
-            print(f"  [CRASH] {name}: {type(exc).__name__}: {exc}", file=sys.stderr)
-            if verbose:
-                traceback.print_exc()
+            tb = traceback.format_exc() if verbose else ""
+            return name, None, f"{type(exc).__name__}: {exc}\n{tb}"
+
+    if n_workers and n_workers > 1:
+        # joblib import is local so the module stays importable without it.
+        from joblib import Parallel, delayed
+        results = Parallel(n_jobs=n_workers, prefer="processes", verbose=0)(
+            delayed(_run_one)(row) for row in rows
+        )
+    else:
+        results = [_run_one(row) for row in rows]
+
+    n_ok = 0
+    for name, status, crash in results:
+        if crash is not None:
+            print(f"  [CRASH] {name}: {crash}", file=sys.stderr)
+            continue
+        if status["skip_reason"]:
+            print(f"  [FAIL] {name}: {status['skip_reason']}")
+            continue
+        errors = []
+        if status["bf_error"]:
+            errors.append(f"bf={status['bf_error']}")
+        if status["fl_error"]:
+            errors.append(f"fl={status['fl_error']}")
+        tag = "OK  " if not errors else "WARN"
+        print(f"  [{tag}] {name}" + (f"  ({'; '.join(errors)})" if errors else ""))
+        n_ok += 1
     print(f"Stage 2 done: {n_ok}/{len(processable)} jobs produced outputs.")
 
 
@@ -276,8 +300,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Stage 2 - auto-detect tumour regions.")
     parser.add_argument("manifest_path")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of parallel worker processes (default: 1).")
     args = parser.parse_args(argv)
-    run(args.manifest_path, verbose=args.verbose)
+    run(args.manifest_path, verbose=args.verbose, n_workers=args.workers)
     return 0
 
 
