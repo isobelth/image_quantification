@@ -63,8 +63,7 @@ def _resolve_tif(output_root: Path, name: str) -> Optional[Path]:
 
 
 def _render_overlay(ax, base, mask, color, alpha: float = 0.4):
-    ax.imshow(base, cmap="gray",
-              vmin=float(np.percentile(base, 1)), vmax=float(np.percentile(base, 99)))
+    ax.imshow(base, cmap="gray", vmin=0, vmax=255)
     overlay = np.zeros((*base.shape, 4), dtype=float)
     overlay[mask.astype(bool)] = [*color, alpha]
     ax.imshow(overlay)
@@ -85,34 +84,33 @@ def render_qc_figure(
     chip_mask = stack[_CH_CHIP].astype(bool)
     tumour_mask = stack[_CH_TUMOUR].astype(bool)
     vasc_mask = stack[_CH_VASC_MASK].astype(bool)
+    bcell_mask = stack[_CH_BCELL_MASK].astype(bool)
     cart_mask = stack[_CH_CART_MASK].astype(bool)
 
-    def _clip(arr, lo=1, hi=99):
-        return np.clip(arr.astype(float), np.percentile(arr, lo), np.percentile(arr, hi))
-
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8), constrained_layout=True)
+    fig, axes = plt.subplots(2, 5, figsize=(20, 8), constrained_layout=True)
     fig.suptitle(image_name, fontsize=12, fontweight="bold")
 
-    # Row 0: raw channels
-    for ax, img, title, cmap in zip(
+    # Row 0: raw channels (all grayscale)
+    for ax, img, title in zip(
         axes[0],
-        [bf, bcell, vasc, cart],
-        ["BF", "B cells (raw)", "Vasculature (raw)", "CART cells (raw)"],
-        ["gray", "Blues_r", "Oranges_r", "Greens_r"],
+        [bf, bf, bcell, vasc, cart],
+        ["BF", "BF", "B cells (raw)", "Vasculature (raw)", "CART cells (raw)"],
     ):
-        ax.imshow(_clip(img), cmap=cmap)
+        ax.imshow(img, cmap="gray", vmin=0, vmax=255)
         ax.set_title(title, fontsize=9)
         ax.axis("off")
 
-    # Row 1: overlays
-    _render_overlay(axes[1, 0], bf, chip_mask, [0, 1, 1], alpha=0.35)     # chip = cyan
+    # Row 1: overlays (raw grayscale + coloured mask)
+    _render_overlay(axes[1, 0], bf, chip_mask, [0, 1, 1], alpha=0.35)        # chip = cyan
     axes[1, 0].set_title("BF + chip", fontsize=9)
-    _render_overlay(axes[1, 1], bf, tumour_mask, [1, 0.2, 0], alpha=0.4)  # tumour = red-orange
+    _render_overlay(axes[1, 1], bf, tumour_mask, [1, 0.2, 0], alpha=0.4)     # tumour = red-orange
     axes[1, 1].set_title("BF + tumour", fontsize=9)
-    _render_overlay(axes[1, 2], vasc, vasc_mask, [1, 0.6, 0], alpha=0.4)  # vasc = orange
-    axes[1, 2].set_title("Vasculature + mask", fontsize=9)
-    _render_overlay(axes[1, 3], cart, cart_mask, [0, 1, 0], alpha=0.4)    # CART = green
-    axes[1, 3].set_title("CART cells + mask", fontsize=9)
+    _render_overlay(axes[1, 2], bcell, bcell_mask, [0, 0, 1], alpha=1) # B cells = blue
+    axes[1, 2].set_title("B cells + mask", fontsize=9)
+    _render_overlay(axes[1, 3], vasc, vasc_mask, [1, 0.6, 0], alpha=1)     # vasc = orange
+    axes[1, 3].set_title("Vasculature + mask", fontsize=9)
+    _render_overlay(axes[1, 4], cart, cart_mask, [0, 1, 0], alpha=1)       # CART = green
+    axes[1, 4].set_title("CART cells + mask", fontsize=9)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
@@ -246,7 +244,7 @@ def run(
             print(f"  [SKIP] {name}: no stage2 or stage3 TIF", file=sys.stderr)
             continue
         image_name = str(getattr(row, "image_name", name) or name)
-        safe_name = image_name.replace("/", "_").replace("\\", "_")
+        safe_name = name.replace("/", "_").replace("\\", "_")
         out_path = figures_dir / f"{safe_name}.png"
         job_args_list.append((str(tif_path), image_name, str(out_path), dpi))
 

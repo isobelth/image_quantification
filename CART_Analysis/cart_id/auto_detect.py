@@ -214,17 +214,13 @@ def segment_tumour(
             darkest = min(ws_medians, key=ws_medians.get)
             tumour = (ws_labels == darkest).astype(bool)
             ws_darkest = tumour
-        else:
-            ws_labels = label(tumour_mask.astype(int))
-            ws_darkest = tumour_mask
-            darkest = None
 
-        # --- optional watershed diagnostic figure ---
-        if save_diag_path is not None:
-            _save_watershed_diag(
-                save_diag_path, image_name, smoothed_bf,
-                tumour_mask, edt_tumour, markers, ws_labels, ws_darkest, darkest,
-            )
+            # --- optional watershed diagnostic figure (only when split attempted) ---
+            if save_diag_path is not None:
+                _save_watershed_diag(
+                    save_diag_path, image_name, smoothed_bf,
+                    tumour_mask, edt_tumour, markers, ws_labels, ws_darkest, darkest,
+                )
 
     return tumour.astype(bool)
 
