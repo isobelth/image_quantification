@@ -105,7 +105,7 @@ def render_qc_figure(
     axes[1, 0].set_title("BF + chip", fontsize=9)
     _render_overlay(axes[1, 1], bf, tumour_mask, [1, 0.2, 0], alpha=0.4)     # tumour = red-orange
     axes[1, 1].set_title("BF + tumour", fontsize=9)
-    _render_overlay(axes[1, 2], bcell, bcell_mask, [0, 0, 1], alpha=1) # B cells = blue
+    _render_overlay(axes[1, 2], bcell, bcell_mask, [1, 0, 0], alpha=1) # B cells = blue
     axes[1, 2].set_title("B cells + mask", fontsize=9)
     _render_overlay(axes[1, 3], vasc, vasc_mask, [1, 0.6, 0], alpha=1)     # vasc = orange
     axes[1, 3].set_title("Vasculature + mask", fontsize=9)
