@@ -36,6 +36,8 @@ from skimage.morphology import (
     erosion,
     h_maxima,
     remove_small_holes,
+    remove_small_objects,
+    white_tophat,
 )
 from skimage.segmentation import expand_labels, watershed
 from skimage.filters import threshold_yen
@@ -145,20 +147,17 @@ def segment_vasculature(vasc_2d: np.ndarray) -> np.ndarray:
     """
     vasc_med = median_filter(vasc_2d, footprint=square(7))
     smooth_vasc = gaussian(vasc_med, sigma=3)
-    seg = smooth_vasc > threshold_triangle(smooth_vasc)
-    labelled = label(seg)
-    rp = pd.DataFrame(regionprops_table(labelled, properties=("area", "solidity")))
-    if not rp.empty:
-        solidity = float(rp.loc[rp["area"].idxmax(), "solidity"])
-        if solidity > 0.9:
-            seg = smooth_vasc > threshold_li(smooth_vasc)
+    seg = smooth_vasc > threshold_mean(smooth_vasc)
     return seg.astype(bool)
 
-
+    
 def segment_cells(channel_2d: np.ndarray) -> np.ndarray:
     """Segment cells using Yen's threshold. Returns a boolean mask."""
-    thresh = threshold_yen(channel_2d)
-    return (channel_2d > thresh).astype(bool)
+
+    bg_removed = white_tophat(channel_2d, footprint=disk(5))
+    cell_seg = bg_removed > threshold_triangle(bg_removed)
+    cell_seg = remove_small_objects(cell_seg, min_size=2)
+    return cell_seg.astype(bool)
 
 
 def segment_tumour(
