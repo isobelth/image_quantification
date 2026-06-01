@@ -10,12 +10,6 @@ A 2-row figure:
 
 Saved to ``<figures_dir>/<image_name>.png``.
 
-Publication plots
------------------
-After per-image QC, summary publication plots are generated from the
-``all_counts.csv``, ``all_distances.csv``, and ``all_colocalisation.csv``
-CSVs written by Stage 4.
-
 Usage:
     python -m cart_id.figures <manifest_path> [--dpi 150] [--workers 4]
 """
@@ -129,87 +123,6 @@ def _render_one(job_args: tuple) -> tuple:
 
 
 # ---------------------------------------------------------------------------
-# Publication plots from stage-4 CSVs
-# ---------------------------------------------------------------------------
-
-def _counts_barplot(df_counts: pd.DataFrame, out_path: Path, dpi: int = 150) -> None:
-    if df_counts.empty:
-        return
-    subset = df_counts[df_counts["region"].isin(["chip", "chip_not_tumour", "tumour"])]
-    if subset.empty:
-        return
-    fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
-    pivot = subset.pivot_table(
-        index=["patient", "day", "image"],
-        columns=["cell_type", "region"],
-        values="cell_count",
-        aggfunc="sum",
-    ).fillna(0)
-    pivot.plot(kind="bar", ax=ax)
-    ax.set_title("Cell counts per region", fontsize=11)
-    ax.set_ylabel("Number of cells")
-    ax.set_xlabel("")
-    ax.tick_params(axis="x", labelrotation=45)
-    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _distance_histogram(df_dists: pd.DataFrame, out_path: Path, dpi: int = 150) -> None:
-    if df_dists.empty:
-        return
-    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    for cell_type, grp in df_dists.groupby("cell_type"):
-        vals = grp["distance_from_tumour_um"].dropna()
-        ax.hist(vals, bins=50, alpha=0.5, label=cell_type)
-    ax.set_title("Distance from tumour edge", fontsize=11)
-    ax.set_xlabel("Distance (µm)")
-    ax.set_ylabel("Number of cells")
-    ax.legend()
-    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _coloc_lineplot(df_coloc: pd.DataFrame, out_path: Path, dpi: int = 150) -> None:
-    if df_coloc.empty:
-        return
-    methods = df_coloc["method"].unique()
-    fig, axes = plt.subplots(1, len(methods), figsize=(7 * len(methods), 5), constrained_layout=True)
-    if len(methods) == 1:
-        axes = [axes]
-    for ax, method in zip(axes, methods):
-        sub = df_coloc[df_coloc["method"] == method]
-        for region, grp in sub.groupby("region"):
-            grp = grp.groupby("param_um")["score"].mean().reset_index()
-            ax.plot(grp["param_um"], grp["score"], marker="o", label=region)
-        ax.set_title(f"Colocalisation: {method}", fontsize=10)
-        ax.set_xlabel("Scale (µm)")
-        ax.set_ylabel("Score")
-        ax.legend(fontsize=7)
-    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-
-
-def make_publication_plots(
-    output_dir: Path,
-    counts_csv: Optional[Path] = None,
-    distances_csv: Optional[Path] = None,
-    coloc_csv: Optional[Path] = None,
-    dpi: int = 150,
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if counts_csv and Path(counts_csv).exists():
-        df_counts = pd.read_csv(counts_csv)
-        _counts_barplot(df_counts, output_dir / "cell_counts_barplot.png", dpi=dpi)
-    if distances_csv and Path(distances_csv).exists():
-        df_dists = pd.read_csv(distances_csv)
-        _distance_histogram(df_dists, output_dir / "distance_histogram.png", dpi=dpi)
-    if coloc_csv and Path(coloc_csv).exists():
-        df_coloc = pd.read_csv(coloc_csv)
-        _coloc_lineplot(df_coloc, output_dir / "coloc_lineplot.png", dpi=dpi)
-    print(f"Publication plots written to {output_dir}")
-
-
-# ---------------------------------------------------------------------------
 # run() entry point
 # ---------------------------------------------------------------------------
 
@@ -218,9 +131,8 @@ def run(
     figures_dir: Optional[str | Path] = None,
     dpi: int = 150,
     n_workers: int = 1,
-    skip_publication_plots: bool = False,
 ) -> None:
-    """Generate per-image QC PNGs and publication plots.
+    """Generate per-image QC PNGs.
 
     *figures_dir* defaults to ``<manifest_dir>/figures``.
     """
@@ -265,16 +177,6 @@ def run(
             n_ok += 1
     print(f"Stage 5 QC figures: {n_ok}/{len(job_args_list)} rendered.")
 
-    if not skip_publication_plots:
-        pub_dir = figures_dir / "publication"
-        make_publication_plots(
-            pub_dir,
-            counts_csv=output_root / "all_counts.csv",
-            distances_csv=output_root / "all_distances.csv",
-            coloc_csv=output_root / "all_colocalisation.csv",
-            dpi=dpi,
-        )
-
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Stage 5 - CART figures.")
@@ -282,14 +184,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--figures-dir", default=None)
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--no-pub-plots", dest="pub_plots", action="store_false")
     args = parser.parse_args(argv)
     run(
         args.manifest_path,
         figures_dir=args.figures_dir,
         dpi=args.dpi,
         n_workers=args.workers,
-        skip_publication_plots=not args.pub_plots,
     )
     return 0
 

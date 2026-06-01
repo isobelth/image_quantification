@@ -54,12 +54,20 @@ COLOC_YLABELS = {
     "coarse_pearson": "Pearson r (blurred channels)",
     "B_near_CART": "Fraction of B cells near a CART cell",
     "CART_near_B": "Fraction of CART cells near a B cell",
+    "B_around_CART_enrichment": "B-cell enrichment around CART (obs/exp)",
+    "CART_around_B_enrichment": "CART enrichment around B cells (obs/exp)",
 }
+
+# Cumulative cross-type enrichment ratios: unbounded above, null (random) = 1.
+ENRICHMENT_METHODS = {"B_around_CART_enrichment", "CART_around_B_enrichment"}
 
 DEFAULT_PALETTE = {
     "ARi": "#FF8C00",   # orange
     "UTD": "#000000",   # black
 }
+
+# Distinct linestyles cycled per patient (consistent across ARi/UTD).
+PATIENT_LINESTYLES = ["-", "--", ":", "-."]
 
 
 # ---------------------------------------------------------------------------
@@ -96,13 +104,14 @@ def create_n_valued_palette(base_colour_hex: str, n: int = 5) -> List[str]:
     return palette
 
 
-def _build_img_color(df: pd.DataFrame, group_col: str = "condition", palette_map=None):
-    """Per-sample colours derived from group membership."""
+def _build_img_color(df: pd.DataFrame, group_col: str = "condition", palette_map=None,
+                     id_col: str = "sample_id"):
+    """Per-line colours derived from group membership (keyed by ``id_col``)."""
     if palette_map is None:
         palette_map = DEFAULT_PALETTE
     img_color, group_images, group_base_colors = {}, {}, {}
     for group_name, base_hex in palette_map.items():
-        grp_imgs = df.loc[df[group_col] == group_name, "sample_id"].unique().tolist()
+        grp_imgs = df.loc[df[group_col] == group_name, id_col].unique().tolist()
         if not grp_imgs:
             continue
         shades = create_n_valued_palette(base_hex, max(len(grp_imgs), 2))
@@ -110,9 +119,25 @@ def _build_img_color(df: pd.DataFrame, group_col: str = "condition", palette_map
             img_color[img_name] = shades[k % len(shades)]
         group_images[group_name] = grp_imgs
         group_base_colors[group_name] = base_hex
-    for img_name in df["sample_id"].unique():
+    for img_name in df[id_col].unique():
         img_color.setdefault(img_name, "gray")
     return img_color, group_images, group_base_colors
+
+
+def _build_linestyle_map(df: pd.DataFrame, id_col: str, linestyle_col: Optional[str]) -> dict:
+    """Map each ``id_col`` value to a linestyle determined by ``linestyle_col``.
+
+    Used to give every patient a distinct linestyle that stays the same across
+    the ARi/UTD conditions.  Returns an empty dict (callers fall back to their
+    default linestyle) when ``linestyle_col`` is absent.
+    """
+    if linestyle_col is None or linestyle_col not in df.columns:
+        return {}
+    keys = list(dict.fromkeys(df[linestyle_col].astype(str)))
+    key_ls = {k: PATIENT_LINESTYLES[i % len(PATIENT_LINESTYLES)] for i, k in enumerate(keys)}
+    lookup = (df.drop_duplicates(subset=[id_col])
+                .set_index(id_col)[linestyle_col].astype(str).map(key_ls))
+    return lookup.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +204,11 @@ def plot_cart_enrichment(counts: pd.DataFrame, plots_dir: Path, dpi: int = 150,
 
     cart_all = counts[counts["cell_type"] == "CART cells"].copy()
     chip_rows = cart_all[cart_all["region"] == "chip"][
-        ["image", "positive_pixels", "region_area_px"]
+        ["sample_id", "positive_pixels", "region_area_px"]
     ].rename(columns={"positive_pixels": "cart_px_chip", "region_area_px": "area_chip"})
 
     enrichment = cart_all[cart_all["region"].isin(ENRICHMENT_REGIONS)].merge(
-        chip_rows, on="image", how="left")
+        chip_rows, on="sample_id", how="left")
     if enrichment.empty:
         print("  [SKIP] CART enrichment — no enrichment-region rows.")
         return None
@@ -225,20 +250,57 @@ def plot_cart_enrichment(counts: pd.DataFrame, plots_dir: Path, dpi: int = 150,
     return enrichment
 
 
+def plot_cell_counts_barplot(counts: pd.DataFrame, plots_dir: Path, dpi: int = 150,
+                             save_type: str = "png") -> None:
+    """Grouped bar plot of cell counts per region for each physical sample."""
+    if counts.empty:
+        return
+    subset = counts[counts["region"].isin(["chip", "chip_not_tumour", "tumour"])]
+    if subset.empty:
+        print("  [SKIP] cell counts barplot — no chip/tumour rows.")
+        return
+    fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
+    # `image` is NOT unique across patients/lif files (e.g. "UTD_device1"
+    # recurs), so include lif_file to keep each physical sample a separate bar
+    # rather than summing distinct samples together.
+    index_cols = [c for c in ["patient", "day", "lif_file", "image"] if c in subset.columns]
+    pivot = subset.pivot_table(
+        index=index_cols,
+        columns=["cell_type", "region"],
+        values="cell_count",
+        aggfunc="sum",
+    ).fillna(0)
+    pivot.plot(kind="bar", ax=ax)
+    ax.set_title("Cell counts per region", fontsize=11)
+    ax.set_ylabel("Number of cells")
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", labelrotation=45)
+    fig.savefig(plots_dir / f"cell_counts_barplot.{save_type}", dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # Distance KDE (source: all_distances.csv)
 # ---------------------------------------------------------------------------
 
 def plot_distance_kde(df: pd.DataFrame, save_path: Path, title_suffix: str = "",
                       group_col: str = "condition", palette_map=None,
+                      id_col: str = "sample_id", linestyle_col: Optional[str] = None,
                       dpi: int = 150) -> None:
-    """KDE of distance from tumour edge per cell type, colour-coded by group."""
+    """KDE of distance from tumour edge per cell type, colour-coded by group.
+
+    Each line corresponds to one ``id_col`` value (``sample_id`` by default, or
+    ``patient_id`` to pool every FOV of a patient into a single curve).  When
+    ``linestyle_col`` is given (e.g. ``patient``) each of its values gets a
+    distinct linestyle, shared across conditions.
+    """
     if df.empty:
         print(f"  [SKIP] distance KDE{title_suffix} — no data.")
         return
-    img_color, group_images, group_base_colors = _build_img_color(df, group_col, palette_map)
+    img_color, group_images, group_base_colors = _build_img_color(df, group_col, palette_map, id_col)
+    id_to_ls = _build_linestyle_map(df, id_col, linestyle_col)
     cell_types = df["cell_type"].unique()
-    imgs = df["sample_id"].unique()
+    imgs = df[id_col].unique()
 
     fig, axes = plt.subplots(1, len(cell_types), figsize=(7 * len(cell_types), 4),
                              sharey=False, constrained_layout=True)
@@ -252,12 +314,13 @@ def plot_distance_kde(df: pd.DataFrame, save_path: Path, title_suffix: str = "",
         group_densities = {g: [] for g in group_base_colors}
 
         for img_name in imgs:
-            vals = sub_ct[sub_ct["sample_id"] == img_name]["distance_from_tumour_um"].values
+            vals = sub_ct[sub_ct[id_col] == img_name]["distance_from_tumour_um"].values
             if len(vals) < 2:
                 continue
             y = gaussian_kde(vals)(x_grid)
             ax.plot(x_grid, y, color=img_color.get(img_name, "gray"),
-                    alpha=0.5, linewidth=1.2, label=img_name)
+                    alpha=0.5, linewidth=1.2, linestyle=id_to_ls.get(img_name, "-"),
+                    label=img_name)
             for grp_name, grp_imgs in group_images.items():
                 if img_name in grp_imgs:
                     group_densities[grp_name].append(y)
@@ -311,6 +374,39 @@ def plot_distance_by_day(distances: pd.DataFrame, plots_dir: Path, dpi: int = 15
             )
 
 
+def plot_distance_by_patient(distances: pd.DataFrame, plots_dir: Path, dpi: int = 150,
+                             save_type: str = "png") -> None:
+    """Per-patient CART distance KDEs, pooling the FOVs of each patient.
+
+    One line per patient+condition (all of that patient's fields of view pooled
+    into a single curve), plus the ARi/UTD condition means.
+    """
+    cart = distances[
+        (distances["cell_type"] == "CART cells") & (distances["condition"].notna())
+    ]
+    if cart.empty:
+        print("  [SKIP] distance-by-patient — no labelled CART rows.")
+        return
+
+    plot_distance_kde(
+        cart[cart["in_chip"] == True],
+        save_path=plots_dir / f"CART_per_patient_in_chip.{save_type}",
+        title_suffix=" \u2014 per patient (FOV-pooled), in chip",
+        id_col="patient_id",
+        linestyle_col="patient",
+        dpi=dpi,
+    )
+    if "in_chip_vasculature" in cart.columns:
+        plot_distance_kde(
+            cart[(cart["in_chip"] == True) & (cart["in_chip_vasculature"] == True)],
+            save_path=plots_dir / f"CART_per_patient_in_chip_vasculature.{save_type}",
+            title_suffix=" \u2014 per patient (FOV-pooled), in vasculature on chip",
+            id_col="patient_id",
+            linestyle_col="patient",
+            dpi=dpi,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Colocalisation (source: all_colocalisation.csv)
 # ---------------------------------------------------------------------------
@@ -318,13 +414,22 @@ def plot_distance_by_day(distances: pd.DataFrame, plots_dir: Path, dpi: int = 15
 def plot_colocalisation(df: pd.DataFrame, save_path: Path, title_suffix: str = "",
                         group_col: str = "condition", palette_map=None,
                         methods: Sequence[str] = ("CART_near_B",),
-                        plot_regions: Sequence[str] = ("chip",), dpi: int = 150) -> None:
-    """Line plot of colocalisation score vs scale (µm); rows=methods, cols=regions."""
+                        plot_regions: Sequence[str] = ("chip",),
+                        id_col: str = "sample_id", linestyle_col: Optional[str] = None,
+                        dpi: int = 150) -> None:
+    """Line plot of colocalisation score vs scale (µm); rows=methods, cols=regions.
+
+    Each per-line curve corresponds to one ``id_col`` value (``sample_id`` by
+    default, or ``patient_id`` for a per-patient FOV-averaged curve).  When
+    ``linestyle_col`` is given (e.g. ``patient``) each of its values gets a
+    distinct linestyle, shared across conditions.
+    """
     if df.empty:
         print(f"  [SKIP] colocalisation{title_suffix} — no data.")
         return
-    img_color, group_images, group_base_colors = _build_img_color(df, group_col, palette_map)
-    images = df["sample_id"].unique()
+    img_color, group_images, group_base_colors = _build_img_color(df, group_col, palette_map, id_col)
+    id_to_ls = _build_linestyle_map(df, id_col, linestyle_col)
+    images = df[id_col].unique()
     n_rows, n_cols = len(methods), len(plot_regions)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows),
                              constrained_layout=True, squeeze=False)
@@ -338,12 +443,13 @@ def plot_colocalisation(df: pd.DataFrame, save_path: Path, title_suffix: str = "
             sub = sub_m[sub_m["region"] == region].copy()
 
             for img_name in images:
-                s = (sub[sub["sample_id"] == img_name]
+                s = (sub[sub[id_col] == img_name]
                      .dropna(subset=["score"])
                      .sort_values("param_um"))
                 ax.plot(s["param_um"], s["score"],
                         color=img_color.get(img_name, "gray"),
-                        alpha=0.7, linewidth=1, linestyle="dashdot", label=img_name)
+                        alpha=0.7, linewidth=1,
+                        linestyle=id_to_ls.get(img_name, "dashdot"), label=img_name)
 
             for grp_name, base_color in group_base_colors.items():
                 mean_grp = (sub[sub[group_col] == grp_name]
@@ -367,9 +473,15 @@ def plot_colocalisation(df: pd.DataFrame, save_path: Path, title_suffix: str = "
                                     merged["score"] + merged["sd"],
                                     color=base_color, alpha=0.15, label=f"\u00b11 SD {grp_name}")
 
-            ax.set_ylim(-1, 1) if method == "coarse_pearson" else ax.set_ylim(0, 1)
             if method == "coarse_pearson":
+                ax.set_ylim(-1, 1)
                 ax.axhline(0, color="gray", linewidth=0.7, linestyle=":")
+            elif method in ENRICHMENT_METHODS:
+                # Unbounded ratio; null (complete spatial randomness) = 1.
+                ax.set_ylim(bottom=0)
+                ax.axhline(1, color="gray", linewidth=0.8, linestyle=":")
+            else:
+                ax.set_ylim(0, 1)
             if row == 0:
                 ax.set_title(region, fontsize=9, fontweight="bold")
             ax.set_xlabel("Scale (\u00b5m)", fontsize=8)
@@ -403,6 +515,42 @@ def plot_colocalisation_all(coloc: pd.DataFrame, plots_dir: Path, dpi: int = 150
         )
 
 
+def plot_colocalisation_by_patient_all(coloc: pd.DataFrame, plots_dir: Path, dpi: int = 150,
+                                       save_type: str = "png") -> None:
+    """Per-patient colocalisation figures, averaging across each patient's FOVs.
+
+    For every method (Pearson, B_near_CART, CART_near_B) one line is drawn per
+    patient+condition — the mean score across that patient's fields of view —
+    plus the ARi/UTD condition means.
+    """
+    if coloc.empty:
+        print("  [SKIP] colocalisation-by-patient — empty CSV.")
+        return
+    labelled = coloc[coloc["condition"].notna()]
+    if labelled.empty:
+        print("  [SKIP] colocalisation-by-patient — no labelled rows.")
+        return
+    # Average across the FOVs of each patient+condition.
+    agg = (labelled
+           .groupby(["patient", "condition", "patient_id", "method", "region", "param_um"],
+                    as_index=False)["score"].mean())
+    methods = [m for m in agg["method"].dropna().unique()]
+    regions = [r for r in COLOC_REGIONS if r in set(agg["region"].dropna().unique())]
+    if not regions:
+        regions = list(agg["region"].dropna().unique())[:3]
+    for method in methods:
+        plot_colocalisation(
+            agg,
+            save_path=plots_dir / f"colocalisation_{method}_per_patient.{save_type}",
+            title_suffix=f" — {method} (per patient, FOV-averaged)",
+            methods=(method,),
+            plot_regions=tuple(regions),
+            id_col="patient_id",
+            linestyle_col="patient",
+            dpi=dpi,
+        )
+
+
 # ---------------------------------------------------------------------------
 # run() entry point
 # ---------------------------------------------------------------------------
@@ -429,6 +577,9 @@ def _load_labelled(csv_path: Path) -> Optional[pd.DataFrame]:
     labelled["sample_id"] = (labelled["patient"].astype(str) + " | "
                              + labelled["lif_file"].astype(str) + " | "
                              + labelled["image"].astype(str))
+    # Per-patient id (one line per patient+condition, averaged over FOVs).
+    labelled["patient_id"] = (labelled["patient"].astype(str) + " | "
+                              + labelled["condition"].astype(str))
     return labelled
 
 
@@ -469,16 +620,19 @@ def run(
     if counts is not None:
         plot_cart_metrics_by_condition(counts, plots_dir, dpi=dpi, save_type=save_type)
         plot_cart_enrichment(counts, plots_dir, dpi=dpi, save_type=save_type)
+        plot_cell_counts_barplot(counts, plots_dir, dpi=dpi, save_type=save_type)
 
     # --- Distance KDE figures ---
     distances = _load_labelled(distances_csv)
     if distances is not None:
         plot_distance_by_day(distances, plots_dir, dpi=dpi, save_type=save_type)
+        plot_distance_by_patient(distances, plots_dir, dpi=dpi, save_type=save_type)
 
     # --- Colocalisation figures ---
     coloc = _load_labelled(coloc_csv)
     if coloc is not None:
         plot_colocalisation_all(coloc, plots_dir, dpi=dpi, save_type=save_type)
+        plot_colocalisation_by_patient_all(coloc, plots_dir, dpi=dpi, save_type=save_type)
 
     print(f"Stage 6 done: plots written to {plots_dir}")
     return plots_dir

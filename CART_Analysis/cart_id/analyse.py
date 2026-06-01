@@ -3,7 +3,7 @@
 For each processable manifest row, reads the curation TIF (preferring
 stage3/ over stage2/), rebuilds canonical regions, counts CART cells and
 B cells per region, computes per-cell distances from the tumour edge, and
-computes two colocalisation metrics between CART and B cells.
+computes three colocalisation metrics between CART and B cells.
 
 Outputs (written to ``output_dir/``):
     all_counts.csv          — rows: image × cell_type × region
@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -25,6 +26,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as _stats
 from scipy.ndimage import distance_transform_edt
+from scipy.spatial import cKDTree
 from skimage.filters import gaussian
 from skimage.measure import label, regionprops_table
 
@@ -53,22 +55,40 @@ GAUSS_SIGMAS_UM = [5, 10, 20, 30, 50]
 PROXIMITY_RADII_UM = [5, 10, 20, 30, 40, 50, 100]
 
 COUNTS_COLUMNS = [
-    "patient", "day", "lif_file", "image", "pixel_size_um",
+    "patient", "day", "lif_file", "image", "FOV", "pixel_size_um",
     "cell_type", "region", "cell_count",
     "positive_pixels", "positive_area_um2",
     "region_area_px", "region_area_um2", "positive_pixel_pct",
 ]
 DISTANCES_COLUMNS = [
-    "patient", "day", "lif_file", "image", "pixel_size_um",
+    "patient", "day", "lif_file", "image", "FOV", "pixel_size_um",
     "cell_type", "distance_from_tumour_um",
     "in_chip", "in_not_chip", "in_tumour", "in_chip_not_tumour",
     "in_chip_vasculature", "in_chip_not_vasculature",
     "in_left", "in_right",
 ]
 COLOC_COLUMNS = [
-    "patient", "day", "lif_file", "image", "pixel_size_um",
+    "patient", "day", "lif_file", "image", "FOV", "pixel_size_um",
     "method", "param_um", "region", "score",
 ]
+
+
+def _extract_fov(image_name: str):
+    """Field-of-view number for an image.
+
+    Preference order:
+      1. the number immediately following ``Ari``/``UTD`` (e.g. ``Ari4`` -> 4),
+      2. otherwise the number following ``device`` (e.g. ``device1`` -> 1).
+    Returns ``np.nan`` when neither pattern is present.
+    """
+    name = str(image_name).lower()
+    m = re.search(r"(?:ari|utd)\s*_?\s*(\d+)", name)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"device\s*_?\s*(\d+)", name)
+    if m:
+        return int(m.group(1))
+    return np.nan
 
 
 def _resolve_tif(output_root: Path, name: str):
@@ -85,6 +105,68 @@ def _count_cells(region_mask: np.ndarray, crow: np.ndarray, ccol: np.ndarray) ->
     if len(crow) == 0:
         return 0
     return int(region_mask[crow, ccol].sum())
+
+
+def _centroids_rc(cell_mask: np.ndarray, h: int, w: int) -> np.ndarray:
+    """Return an (N, 2) array of (row, col) centroids for each connected cell."""
+    lab = label(cell_mask.astype(bool))
+    if lab.max() == 0:
+        return np.empty((0, 2), dtype=int)
+    props = pd.DataFrame(regionprops_table(lab, properties=("centroid",)))
+    rr = np.clip(np.round(props["centroid-0"].values).astype(int), 0, h - 1)
+    cc = np.clip(np.round(props["centroid-1"].values).astype(int), 0, w - 1)
+    return np.column_stack([rr, cc])
+
+
+def _cross_type_cumulative_enrichment(
+    ref_rc: np.ndarray,
+    tgt_rc: np.ndarray,
+    region_mask: np.ndarray,
+    radii_px: List[float],
+) -> dict:
+    """Cumulative (Ripley cross-K style) enrichment of *target* cells around *reference* cells.
+
+    For each radius ``r`` the score is::
+
+        (total target cells within r of all eligible reference cells)
+        ---------------------------------------------------------------
+        (expected count under complete spatial randomness)
+
+    The expectation uses the in-region target density ``lambda = N_tgt / A``,
+    so a disc of radius ``r`` is expected to hold ``lambda * pi * r**2`` targets.
+    A *border correction* is applied: only reference cells whose full search
+    disc fits inside the region (centroid at least ``r`` px from the region
+    boundary) contribute, which removes the downward bias for cells near the
+    chip wall / region edge.
+
+    Returns ``{r_px: score}`` where ``1`` = random, ``>1`` = attraction
+    (recruitment / co-clustering), ``<1`` = exclusion.  Cross-type only, so
+    there is no self-pair to exclude.
+    """
+    out = {r: np.nan for r in radii_px}
+    area = float(region_mask.sum())
+    if area <= 0 or len(ref_rc) == 0 or len(tgt_rc) == 0:
+        return out
+    # Restrict both populations to cells whose centroid lies inside the region.
+    ref_in = ref_rc[region_mask[ref_rc[:, 0], ref_rc[:, 1]]]
+    tgt_in = tgt_rc[region_mask[tgt_rc[:, 0], tgt_rc[:, 1]]]
+    n_tgt = len(tgt_in)
+    if len(ref_in) == 0 or n_tgt == 0:
+        return out
+    lambda_tgt = n_tgt / area
+    edge_dist = distance_transform_edt(region_mask)
+    ref_edge = edge_dist[ref_in[:, 0], ref_in[:, 1]]
+    tree = cKDTree(tgt_in)
+    for r in radii_px:
+        eligible = ref_edge >= r          # full search disc fits inside the region
+        n_elig = int(eligible.sum())
+        if n_elig == 0:
+            continue
+        counts = tree.query_ball_point(ref_in[eligible], r, return_length=True)
+        observed = float(np.sum(counts))
+        expected = lambda_tgt * np.pi * (r ** 2) * n_elig
+        out[r] = observed / expected if expected > 0 else np.nan
+    return out
 
 
 def _build_canonical_regions(
@@ -233,11 +315,36 @@ def analyse_one(
                 method="CART_near_B", param_um=radius_um, region=rname, score=frac_c,
             ))
 
-    return (
-        pd.DataFrame(count_records),
-        pd.DataFrame(dist_records),
-        pd.DataFrame(coloc_records),
-    )
+    # Method 3: Cumulative cross-type enrichment (Ripley cross-K style)
+    # "How many <target> cells lie within r of a <reference> cell, vs random?"
+    # score 1 = random, >1 = recruitment/attraction, <1 = exclusion.
+    cart_rc = _centroids_rc(cart_mask, h, w)
+    bcell_rc = _centroids_rc(bcell_mask, h, w)
+    radii_px = [(radius_um / um_per_px if um_per_px > 0 else radius_um)
+                for radius_um in PROXIMITY_RADII_UM]
+    for rname, rmask in regions.items():
+        enr_b_around_cart = _cross_type_cumulative_enrichment(cart_rc, bcell_rc, rmask, radii_px)
+        enr_cart_around_b = _cross_type_cumulative_enrichment(bcell_rc, cart_rc, rmask, radii_px)
+        for radius_um, radius_px in zip(PROXIMITY_RADII_UM, radii_px):
+            coloc_records.append(dict(
+                **meta, image=image_name,
+                method="B_around_CART_enrichment", param_um=radius_um, region=rname,
+                score=enr_b_around_cart[radius_px],
+            ))
+            coloc_records.append(dict(
+                **meta, image=image_name,
+                method="CART_around_B_enrichment", param_um=radius_um, region=rname,
+                score=enr_cart_around_b[radius_px],
+            ))
+
+    fov = _extract_fov(image_name)
+    df_counts = pd.DataFrame(count_records)
+    df_dists = pd.DataFrame(dist_records)
+    df_coloc = pd.DataFrame(coloc_records)
+    for _df in (df_counts, df_dists, df_coloc):
+        if not _df.empty:
+            _df.insert(_df.columns.get_loc("image") + 1, "FOV", fov)
+    return df_counts, df_dists, df_coloc
 
 
 def run(
