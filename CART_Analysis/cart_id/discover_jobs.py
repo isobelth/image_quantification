@@ -29,9 +29,15 @@ MANIFEST_COLUMNS = [
     "n_channels",
     "patient",
     "day",
+    "ch_bf",
+    "ch_bcells",
+    "ch_vasc",
+    "ch_cart",
     "should_process",
     "skip_reason",
 ]
+
+CHANNEL_COLUMNS = ("ch_bf", "ch_bcells", "ch_vasc", "ch_cart")
 
 STAGE2_SUBDIR = "stage2"
 
@@ -55,6 +61,10 @@ def _job_id(source_path: Path, image_index: int, image_name: str) -> str:
 def build_manifest(
     source_dir: str | Path,
     output_dir: Optional[str | Path] = None,
+    ch_bf: int = BF_CHANNEL,
+    ch_bcells: int = BCELL_CHANNEL,
+    ch_vasc: int = VASC_CHANNEL,
+    ch_cart: Optional[int] = None,
 ) -> pd.DataFrame:
     """Scan *source_dir* for LIF files and return a manifest DataFrame.
 
@@ -65,6 +75,10 @@ def build_manifest(
     output_dir:
         If given, marks ``should_process=False`` for any image whose
         ``stage2/<expected_output_name>.tif`` already exists there.
+    ch_bf, ch_bcells, ch_vasc, ch_cart:
+        Default channel indices written into the manifest for every image.
+        Edit the resulting CSV to override channels for individual images
+        before running Stage 2. ``ch_cart=None`` means "last channel".
     """
     source_dir = Path(source_dir)
     lif_files = sorted(source_dir.rglob("*.lif"))
@@ -115,6 +129,10 @@ def build_manifest(
                 "n_channels": n_channels,
                 "patient": patient,
                 "day": day,
+                "ch_bf": ch_bf,
+                "ch_bcells": ch_bcells,
+                "ch_vasc": ch_vasc,
+                "ch_cart": ch_cart if ch_cart is not None else n_channels - 1,
                 "should_process": should_process,
                 "skip_reason": skip_reason,
             })
@@ -127,8 +145,17 @@ def build_and_write_manifest(
     source_dir: str | Path,
     output_dir: str | Path,
     manifest_path: Optional[str | Path] = None,
+    ch_bf: int = BF_CHANNEL,
+    ch_bcells: int = BCELL_CHANNEL,
+    ch_vasc: int = VASC_CHANNEL,
+    ch_cart: Optional[int] = None,
 ) -> Path:
-    """Build the manifest, write it to *output_dir*/manifest.csv, and return the path."""
+    """Build the manifest, write it to *output_dir*/manifest.csv, and return the path.
+
+    If a manifest already exists at *manifest_path*, any per-row channel
+    overrides the user has made (``ch_bf``/``ch_bcells``/``ch_vasc``/``ch_cart``)
+    are preserved by job_id.
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,7 +163,25 @@ def build_and_write_manifest(
         manifest_path = output_dir / "manifest.csv"
     manifest_path = Path(manifest_path)
 
-    df = build_manifest(source_dir, output_dir=output_dir)
+    df = build_manifest(
+        source_dir, output_dir=output_dir,
+        ch_bf=ch_bf, ch_bcells=ch_bcells, ch_vasc=ch_vasc, ch_cart=ch_cart,
+    )
+
+    # Preserve any manual channel edits from a previous manifest
+    if manifest_path.exists():
+        try:
+            prev = pd.read_csv(manifest_path)
+            if "job_id" in prev.columns:
+                keep_cols = [c for c in CHANNEL_COLUMNS if c in prev.columns]
+                if keep_cols:
+                    prev_idx = prev.set_index("job_id")[keep_cols]
+                    for col in keep_cols:
+                        mapped = df["job_id"].map(prev_idx[col])
+                        df[col] = mapped.where(mapped.notna(), df[col]).astype(int)
+        except Exception as exc:
+            print(f"  [WARN] Could not read previous manifest for channel preservation: {exc}", file=sys.stderr)
+
     df.to_csv(manifest_path, index=False)
 
     n_total = len(df)

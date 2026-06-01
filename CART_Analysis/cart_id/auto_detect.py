@@ -288,21 +288,38 @@ def _save_watershed_diag(
 # Per-job driver
 # ---------------------------------------------------------------------------
 
+def _row_channel(row: pd.Series, key: str, default: int) -> int:
+    """Read a channel index from a manifest row, falling back to *default*."""
+    if key in row and pd.notna(row[key]):
+        return int(row[key])
+    return default
+
+
 def process_job(
     row: pd.Series,
     output_root: Path,
     ch_bf: int = CH_BF,
     ch_bcells: int = CH_BCELLS,
     ch_vasc: int = CH_VASC,
+    ch_cart: Optional[int] = None,
     figures_dir: Optional[Path] = None,
     verbose: bool = False,
 ) -> dict:
-    """Segment one image and write stage2/<name>.tif.  Returns a status dict."""
+    """Segment one image and write stage2/<name>.tif.  Returns a status dict.
+
+    Channel indices are read from the manifest row (``ch_bf``, ``ch_bcells``,
+    ``ch_vasc``, ``ch_cart``) when present, allowing per-image overrides.
+    """
     name = str(row["expected_output_name"])
     lif_path = Path(str(row["source_file"]))
     image_index = int(row["image_index"])
     image_name = str(row["image_name"])
     n_channels = int(row["n_channels"])
+
+    ch_bf = _row_channel(row, "ch_bf", ch_bf)
+    ch_bcells = _row_channel(row, "ch_bcells", ch_bcells)
+    ch_vasc = _row_channel(row, "ch_vasc", ch_vasc)
+    ch_cart_idx = _row_channel(row, "ch_cart", ch_cart if ch_cart is not None else n_channels - 1)
 
     status = {
         "expected_output_name": name,
@@ -323,10 +340,17 @@ def process_job(
         status["skip_reason"] = f"too_few_channels ({stack_cyx.shape[0]})"
         return status
 
+    n_loaded = stack_cyx.shape[0]
+    for label_, idx in (("ch_bf", ch_bf), ("ch_bcells", ch_bcells),
+                        ("ch_vasc", ch_vasc), ("ch_cart", ch_cart_idx)):
+        if not (0 <= idx < n_loaded):
+            status["skip_reason"] = f"bad_channel_index ({label_}={idx}, n_channels={n_loaded})"
+            return status
+
     bf_raw = stack_cyx[ch_bf]
     bcell_raw = stack_cyx[ch_bcells]
     vasc_raw = stack_cyx[ch_vasc]
-    cart_raw = stack_cyx[-1]  # last channel
+    cart_raw = stack_cyx[ch_cart_idx]
 
     # Pixel size as (y_um, x_um) tuple for TIF writing
     pixel_size_um = (um_per_px, um_per_px)
@@ -404,6 +428,7 @@ def run(
     ch_bf: int = CH_BF,
     ch_bcells: int = CH_BCELLS,
     ch_vasc: int = CH_VASC,
+    ch_cart: Optional[int] = None,
     save_diag_figures: bool = True,
 ) -> None:
     """Run Stage 2 for every processable row in the manifest."""
@@ -424,7 +449,11 @@ def run(
     rows = [row for _, row in processable.iterrows()]
 
     def _run_one(row: pd.Series) -> tuple:
-        status = process_job(row, output_root, ch_bf=ch_bf, ch_bcells=ch_bcells, ch_vasc=ch_vasc, figures_dir=figures_dir, verbose=verbose)
+        status = process_job(
+            row, output_root,
+            ch_bf=ch_bf, ch_bcells=ch_bcells, ch_vasc=ch_vasc, ch_cart=ch_cart,
+            figures_dir=figures_dir, verbose=verbose,
+        )
         return status
 
     if n_workers and n_workers > 1:

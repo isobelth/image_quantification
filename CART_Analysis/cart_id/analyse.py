@@ -47,22 +47,26 @@ _CH_BCELL_MASK = 9
 _CH_CART_MASK = 10
 
 # Colocalisation parameters (mirrored from the original notebook)
-GAUSS_SIGMAS_UM = [5, 10, 20, 50, 100]
+# Sigma capped at 50 um: beyond the cellular structure scale the blurred
+# channels become near-constant within a region, making Pearson undefined.
+GAUSS_SIGMAS_UM = [5, 10, 20, 30, 50]
 PROXIMITY_RADII_UM = [5, 10, 20, 30, 40, 50, 100]
 
 COUNTS_COLUMNS = [
-    "patient", "day", "lif_file", "image",
-    "cell_type", "region", "cell_count", "positive_pixels",
+    "patient", "day", "lif_file", "image", "pixel_size_um",
+    "cell_type", "region", "cell_count",
+    "positive_pixels", "positive_area_um2",
+    "region_area_px", "region_area_um2", "positive_pixel_pct",
 ]
 DISTANCES_COLUMNS = [
-    "patient", "day", "lif_file", "image",
+    "patient", "day", "lif_file", "image", "pixel_size_um",
     "cell_type", "distance_from_tumour_um",
     "in_chip", "in_not_chip", "in_tumour", "in_chip_not_tumour",
     "in_chip_vasculature", "in_chip_not_vasculature",
     "in_left", "in_right",
 ]
 COLOC_COLUMNS = [
-    "patient", "day", "lif_file", "image",
+    "patient", "day", "lif_file", "image", "pixel_size_um",
     "method", "param_um", "region", "score",
 ]
 
@@ -131,6 +135,7 @@ def analyse_one(
     dist_from_tumour = distance_transform_edt(~tumour_mask)
     regions = _build_canonical_regions(chip_center, tumour_mask, vasc_mask, left_mask, right_mask)
     h, w = chip_center.shape
+    um2_per_px = float(um_per_px) ** 2
 
     count_records: List[dict] = []
     dist_records: List[dict] = []
@@ -150,18 +155,30 @@ def analyse_one(
             ccol = np.array([], dtype=int)
 
         # Overall count
+        overall_area = int(h * w)
         count_records.append(dict(
             **meta, image=image_name, cell_type=cell_type,
-            region="overall", cell_count=total_cells, positive_pixels=total_pixels,
+            region="overall", cell_count=total_cells,
+            positive_pixels=total_pixels,
+            positive_area_um2=total_pixels * um2_per_px,
+            region_area_px=overall_area,
+            region_area_um2=overall_area * um2_per_px,
+            positive_pixel_pct=(100.0 * total_pixels / overall_area) if overall_area else np.nan,
         ))
 
         # Per-region counts
         for region_name, region_mask in regions.items():
             n_cells = _count_cells(region_mask, crow, ccol)
             n_pixels = int(np.sum(cell_mask & region_mask))
+            area_px = int(region_mask.sum())
             count_records.append(dict(
                 **meta, image=image_name, cell_type=cell_type,
-                region=region_name, cell_count=n_cells, positive_pixels=n_pixels,
+                region=region_name, cell_count=n_cells,
+                positive_pixels=n_pixels,
+                positive_area_um2=n_pixels * um2_per_px,
+                region_area_px=area_px,
+                region_area_um2=area_px * um2_per_px,
+                positive_pixel_pct=(100.0 * n_pixels / area_px) if area_px else np.nan,
             ))
 
         # Per-cell distances + region membership
@@ -266,6 +283,7 @@ def run(
             "patient": str(getattr(row, "patient", "unknown") or "unknown"),
             "day": str(getattr(row, "day", "unknown") or "unknown"),
             "lif_file": Path(str(row.source_file)).stem if row.source_file else "",
+            "pixel_size_um": um_per_px,
         }
         jobs.append((tif_path, meta, str(row.image_name), um_per_px, name))
 
