@@ -20,7 +20,6 @@
 **/data/
 
 # Documents and data files
-**/*.csv
 **/*.xls
 **/*.xlsx
 **/*.xlsm
