@@ -7,6 +7,8 @@
 3. Use the GUI in this python code to curate the masks
 4. (Hopefully!) use the brightfield and curated masks to train a deep learning model to segment vasculature directly from the brightfield images
 
+<img src="README_images/label_curation_1.png" width="80%" />
+
 # How to Use This Code
 
 1. If you've ever used the permeability/placenta code, you already have VS code and the relevant environment installed, so you can skip ahead to step 7
@@ -22,4 +24,7 @@
 8. You might have to press `python environments` to see it listed
 9. Press the `Run All` button at the top of the file. The GUI should open in a new window
     
+# How to Use The GUI
 
+
+<img src="README_images/gui_overview.png" width="80%" />
