@@ -184,8 +184,9 @@ def add_image_details(
     df["flag"] = flag
 
 
-    # All checks use the original lowercase filename (with underscores)
-    fn = filename.lower()
+    # All checks use the original lowercase filename (with underscores).
+    # Strip the file extension so suffix checks like endswith("_d1") work.
+    fn = os.path.splitext(filename.lower())[0]
 
     # Well number
     if "well1" in fn or "well_1" in fn:
@@ -261,7 +262,7 @@ def segment_acinus(
     min_sphericity: float = 0.55,
     qc_dir: Optional[str] = None,
     filename: Optional[str] = None,
-) -> Tuple[np.ndarray, float, str]:
+) -> Tuple[np.ndarray, float, str, str, float]:
     """
     Segment the primary acinus from a combined intensity image.
 
@@ -270,6 +271,8 @@ def segment_acinus(
     acinus_mask : 3-D labelled array (background=0, acinus=1)
     new_pixel_size : isotropic voxel size in Âµm
     flag : string flag describing any issues
+    threshold_method : name of the threshold used
+    final_solidity : median slice solidity (QC metric)
     """
     scale_z = spacing[2] / spacing[0]
     rescaled = rescale(acinus_image, scale=(scale * scale_z, scale, scale), anti_aliasing=False)
@@ -1298,12 +1301,14 @@ class AcinarImage:
         rescaled_nuc = rescaled_nuc * acinus_mask
         rescaled_mem = rescaled_mem * acinus_mask
 
-        # Rescale and label the mito mask
-        mito_raw = self._load_mask_raw(self.mito_mask_path)
-        print(mito_raw.max(), "max pixel value in raw mito mask")
-        print(mito_raw.sum(), "total mito pixels in raw mask")
+        # Rescale, threshold and restrict the mito mask to the acinus.
+        # Rescaling a binary mask with interpolation produces fractional
+        # boundary values, so we threshold back to binary before labelling.
+        # Signal outside the acinus is discarded (set to 0).
         rescaled_mito = self._load_mask_rescaled(self.mito_mask_path)
-        mito_labelled = label(rescaled_mito)
+        mito_binary = (rescaled_mito > 0.5) & (acinus_mask > 0)
+        mito_binary = remove_small_objects(mito_binary, min_size=mito_min_object_size)
+        mito_labelled = label(mito_binary)
 
         # --- Segment nuclei via watershed (same as cell_nuclear_shape) ---
         cleaned_nuc = gaussian(rescaled_nuc, 1)
@@ -1334,28 +1339,32 @@ class AcinarImage:
         matching = _match_nuclei_to_cells(seg_nuc, seg_mem_exp, px)
 
         # --- Mito properties ---
-        mito_props = pd.DataFrame(
-            regionprops_table(mito_labelled, properties=("label", "area"))
-        )
         vx3 = px ** 3
         mito_rows = []
         for _, row in matching.iterrows():
             nuc_idx = int(row["nucleus_label"])
             cell_idx = int(row["cell_label"])
 
-            # Mito that overlap with this nucleus's watershed region
-            mito_in_nuc = np.unique(mito_labelled * (seg_nuc == nuc_idx))
-            mito_in_nuc = mito_in_nuc[mito_in_nuc > 0]
-            n_mito = len(mito_in_nuc)
-            total_mito_vol = float(
-                mito_props[mito_props["label"].isin(mito_in_nuc)]["area"].sum() * vx3
-            )
+            # Restrict mito to this cell's own segmented volume. A mito label
+            # spanning multiple cells is an artefact (failure to separate
+            # individual mito regions), so only its intra-cell portion counts.
+            cell_binary = (seg_mem_exp == cell_idx)
+            mito_in_cell_mask = cell_binary & (mito_labelled > 0)
+
+            # Count distinct mito objects present inside this cell.
+            mito_in_cell_labels = np.unique(mito_labelled[mito_in_cell_mask])
+            mito_in_cell_labels = mito_in_cell_labels[mito_in_cell_labels > 0]
+            n_mito = len(mito_in_cell_labels)
+
+            # Volume = mito voxels inside this cell only, so it can never
+            # exceed the cell volume.
+            total_mito_vol = float(mito_in_cell_mask.sum()) * vx3
 
             # Mito distribution: distance from nucleus surface within cell
             nuc_binary = (seg_nuc == nuc_idx).astype(np.uint8)
-            cell_binary = (seg_mem_exp == cell_idx).astype(np.uint8)
-            dist_from_nuc = ndi.distance_transform_edt(1 - nuc_binary) * cell_binary * (px ** 2)
-            mito_in_cell = cell_binary * (mito_labelled > 0)
+            cell_binary_u8 = cell_binary.astype(np.uint8)
+            dist_from_nuc = ndi.distance_transform_edt(1 - nuc_binary) * cell_binary_u8 * px
+            mito_in_cell = mito_in_cell_mask.astype(np.uint8)
 
             # Bin mito pixel counts by distance
             flat_dist = np.ravel(dist_from_nuc)
@@ -1388,6 +1397,10 @@ class AcinarImage:
             })
 
         mito_df = pd.DataFrame(mito_rows)
+        # One row per cell: when several nuclei map to the same cell, the
+        # per-cell mito values are identical, so drop duplicates to avoid a
+        # many-to-many merge inflating rows and double-counting volume.
+        mito_df = mito_df.drop_duplicates(subset="cell_label")
         result = matching.merge(mito_df, on="cell_label", how="left")
 
         # Acinus-level stats
@@ -1395,11 +1408,11 @@ class AcinarImage:
         if acinus_regions:
             result["acinus_volume_um3"] = acinus_regions[0].area * vx3
             result["total_mito_volume_um3"] = mito_df["mito_volume_um3"].sum()
-            result["number_of_cells"] = len(matching)
+            result["number_of_nuclei"] = len(matching)
         else:
             result["acinus_volume_um3"] = np.nan
             result["total_mito_volume_um3"] = np.nan
-            result["number_of_cells"] = 0
+            result["number_of_nuclei"] = 0
 
         # Filter out biologically implausible cells
         result = result[

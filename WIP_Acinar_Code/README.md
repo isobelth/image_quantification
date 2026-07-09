@@ -227,7 +227,7 @@ The result is a binary 3D mask used by all downstream analyses.
 | `mito_volume_um3` | Total mito volume per cell |
 | `mito_cell_vol_ratio` | Mito vol / cell vol |
 | `mean_mito_distance_ratio` | Mean mito pixel density per distance bin from nucleus |
-| `acinus_volume_um3`, `total_mito_volume_um3`, `number_of_cells` | Acinus-level summaries |
+| `acinus_volume_um3`, `total_mito_volume_um3`, `number_of_nuclei` | Acinus-level summaries |
 
 **QC plot:** Acinus mask + cell labels + mito labels.
 
