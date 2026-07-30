@@ -1,0 +1,21 @@
+name: micro_sam
+# CUDA-enabled micro_sam / napari / pytorch environment.
+# Target GPU: NVIDIA RTX 5080 (Blackwell, sm_120) -> requires CUDA 12.8+ / 13.x.
+# Driver 591.86 supports CUDA 13.1, so the CUDA 13.0 runtime builds work here.
+# Mirrors the known-good build (pytorch 2.12 cuda130, python 3.11) but lets
+# conda-forge solve the dependency tree instead of pinning brittle build hashes.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - cuda-version=13.*
+  # Force the CUDA builds of pytorch / torchvision (not the CPU-only ones).
+  - pytorch=2.12.*=cuda130*
+  - torchvision=*=cuda130*
+  - napari
+  - pyqt
+  - micro_sam
+  - pip
+  - pip:
+      - scikit-image
+      - scipy
