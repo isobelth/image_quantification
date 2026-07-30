@@ -44,7 +44,7 @@ warnings.filterwarnings("ignore")
 CART_PLOT_REGIONS = ["chip", "tumour", "chip_vasculature"]
 CART_METRICS = [
     ("cell_count", "CART Cell Count"),
-    ("positive_pixels", "CART Positive Pixels"),
+    ("positive_area_um2", "CART Positive Area (\u00b5m\u00b2)"),
     ("positive_pixel_pct", "CART Coverage (% of region)"),
 ]
 ENRICHMENT_REGIONS = ["tumour", "chip_vasculature", "chip_not_vasculature"]
@@ -68,6 +68,16 @@ DEFAULT_PALETTE = {
 
 # Distinct linestyles cycled per patient (consistent across ARi/UTD).
 PATIENT_LINESTYLES = ["-", "--", ":", "-."]
+
+# Rows whose ``id`` (= ``lif_file`` + "_" + ``image``) contains *both*
+# substrings of any pair below are dropped from every CSV before plotting.
+# Matching is case-insensitive.
+DEFAULT_DROP_PAIRS = [
+    ("FL24", "ARI3"),
+    ("FL32", "ARI3"),
+    ("FL32", "ARI4"),
+    ("FL44", "ARI1"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -154,14 +164,15 @@ def _cart_counts_subset(counts: pd.DataFrame) -> pd.DataFrame:
 
 def plot_cart_metrics_by_condition(counts: pd.DataFrame, plots_dir: Path, dpi: int = 150,
                                    save_type: str = "png") -> None:
-    """Scatter of CART metrics per region, x-axis = condition."""
+    """Scatter of CART metrics per region, x-axis = condition, colour = patient."""
     cart_data = _cart_counts_subset(counts)
     if cart_data.empty:
         print("  [SKIP] CART metrics by condition — no labelled CART rows.")
         return
     condition_order = list(dict.fromkeys(cart_data["condition"]))
-    condition_colors = {cond: plt.cm.tab20(i / max(len(condition_order) - 1, 1))
-                        for i, cond in enumerate(condition_order)}
+    patient_order = list(dict.fromkeys(cart_data["patient"].astype(str)))
+    patient_colors = {p: plt.cm.tab20(i / max(len(patient_order) - 1, 1))
+                      for i, p in enumerate(patient_order)}
 
     for metric, ylabel in CART_METRICS:
         if metric not in cart_data.columns:
@@ -173,11 +184,11 @@ def plot_cart_metrics_by_condition(counts: pd.DataFrame, plots_dir: Path, dpi: i
         for ax, region in zip(axes, CART_PLOT_REGIONS):
             region_data = cart_data[cart_data["region"] == region]
             for condition_index, condition in enumerate(condition_order):
-                values = region_data.loc[region_data["condition"] == condition, metric].values
-                jitter = np.linspace(-0.15, 0.15, max(len(values), 1))
-                for jitter_offset, value in zip(jitter, values):
-                    ax.scatter(condition_index + jitter_offset, value,
-                               color=condition_colors[condition], s=30, alpha=0.5,
+                condition_rows = region_data[region_data["condition"] == condition]
+                jitter = np.linspace(-0.15, 0.15, max(len(condition_rows), 1))
+                for jitter_offset, (_, row) in zip(jitter, condition_rows.iterrows()):
+                    ax.scatter(condition_index + jitter_offset, row[metric],
+                               color=patient_colors[str(row["patient"])], s=30, alpha=0.7,
                                edgecolor="None", linewidth=0.4, zorder=3)
             ax.set_xticks(range(len(condition_order)))
             ax.set_xticklabels(condition_order, fontsize=8, rotation=45, ha="right")
@@ -186,10 +197,11 @@ def plot_cart_metrics_by_condition(counts: pd.DataFrame, plots_dir: Path, dpi: i
 
         legend_handles = [
             Line2D([0], [0], marker="o", color="w",
-                   markerfacecolor=condition_colors[c], markersize=8, label=c)
-            for c in condition_order
+                   markerfacecolor=patient_colors[p], markersize=8, label=p)
+            for p in patient_order
         ]
-        fig.legend(handles=legend_handles, loc="outside right upper", fontsize=7, ncol=1)
+        fig.legend(handles=legend_handles, loc="outside right upper", fontsize=7, ncol=1,
+                   title="Patient")
         fig.savefig(plots_dir / f"CART_{metric}_by_condition.{save_type}", dpi=dpi, bbox_inches="tight")
         plt.close(fig)
 
@@ -555,7 +567,27 @@ def plot_colocalisation_by_patient_all(coloc: pd.DataFrame, plots_dir: Path, dpi
 # run() entry point
 # ---------------------------------------------------------------------------
 
-def _load_labelled(csv_path: Path) -> Optional[pd.DataFrame]:
+def _drop_by_id_pairs(df: pd.DataFrame, csv_name: str,
+                      drop_pairs: Optional[Sequence[Sequence[str]]]) -> pd.DataFrame:
+    """Drop rows whose ``lif_file`` + "_" + ``image`` id contains both substrings
+    of any pair in *drop_pairs* (case-insensitive).
+    """
+    if not drop_pairs or "image" not in df.columns or "lif_file" not in df.columns:
+        return df
+    ids = (df["lif_file"].astype(str) + "_" + df["image"].astype(str)).str.lower()
+    to_drop = pd.Series(False, index=df.index)
+    for pair in drop_pairs:
+        a, b = (str(s).lower() for s in pair)
+        to_drop |= ids.str.contains(a, na=False) & ids.str.contains(b, na=False)
+    n_dropped = int(to_drop.sum())
+    if n_dropped:
+        print(f"  Dropped {n_dropped} row(s) from {csv_name} matching drop pairs.")
+    return df[~to_drop]
+
+
+def _load_labelled(csv_path: Path,
+                   drop_pairs: Optional[Sequence[Sequence[str]]] = None,
+                   save_valid_only: bool = False) -> Optional[pd.DataFrame]:
     if not csv_path.exists():
         print(f"  [SKIP] {csv_path.name} not found.", file=sys.stderr)
         return None
@@ -567,6 +599,11 @@ def _load_labelled(csv_path: Path) -> Optional[pd.DataFrame]:
             print(f"  Dropped {n_dropped} row(s) from {csv_path.name} "
                   f"({df.loc[is_out, 'image'].nunique()} image(s) with 'out' in the name).")
         df = df[~is_out]
+    df = _drop_by_id_pairs(df, csv_path.name, drop_pairs)
+    if save_valid_only:
+        valid_path = csv_path.with_name(f"{csv_path.stem}_valid_only{csv_path.suffix}")
+        df.to_csv(valid_path, index=False)
+        print(f"  Saved filtered CSV → {valid_path}")
     if df.empty:
         print(f"  [SKIP] {csv_path.name} is empty.")
         return None
@@ -591,7 +628,8 @@ def run(
     coloc_csv: Optional[str | Path] = None,
     dpi: int = 150,
     save_type: str = "png",
-) -> Path:
+    drop_pairs: Optional[Sequence[Sequence[str]]] = DEFAULT_DROP_PAIRS,
+) -> tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """Generate all publication plots from the three Stage-4 CSVs.
 
     Parameters
@@ -604,6 +642,20 @@ def run(
     counts_csv, distances_csv, coloc_csv:
         Override paths to individual CSVs (each plot uses one CSV as its
         single source of truth).
+    drop_pairs:
+        Sequence of ``(substring_a, substring_b)`` pairs; any row whose
+        ``lif_file`` + "_" + ``image`` id contains *both* substrings (matched
+        case-insensitively) is dropped from every CSV before plotting.
+        Defaults to :data:`DEFAULT_DROP_PAIRS`; pass ``None`` or ``[]`` to
+        disable filtering.
+
+    Returns
+    -------
+    tuple
+        The filtered ``(counts, distances, coloc)`` DataFrames (each ``None``
+        if its CSV was missing/empty).  A ``*_valid_only.csv`` copy of each
+        input CSV — with the dropped rows removed — is also written alongside
+        the original.
     """
     output_dir = Path(output_dir)
     plots_dir = Path(plots_dir) if plots_dir is not None else output_dir / "plots"
@@ -616,26 +668,26 @@ def run(
     print(f"Stage 6: writing plots to {plots_dir}")
 
     # --- Counts-based figures ---
-    counts = _load_labelled(counts_csv)
+    counts = _load_labelled(counts_csv, drop_pairs, save_valid_only=True)
     if counts is not None:
         plot_cart_metrics_by_condition(counts, plots_dir, dpi=dpi, save_type=save_type)
         plot_cart_enrichment(counts, plots_dir, dpi=dpi, save_type=save_type)
         plot_cell_counts_barplot(counts, plots_dir, dpi=dpi, save_type=save_type)
 
     # --- Distance KDE figures ---
-    distances = _load_labelled(distances_csv)
+    distances = _load_labelled(distances_csv, drop_pairs, save_valid_only=True)
     if distances is not None:
         plot_distance_by_day(distances, plots_dir, dpi=dpi, save_type=save_type)
         plot_distance_by_patient(distances, plots_dir, dpi=dpi, save_type=save_type)
 
     # --- Colocalisation figures ---
-    coloc = _load_labelled(coloc_csv)
+    coloc = _load_labelled(coloc_csv, drop_pairs, save_valid_only=True)
     if coloc is not None:
         plot_colocalisation_all(coloc, plots_dir, dpi=dpi, save_type=save_type)
         plot_colocalisation_by_patient_all(coloc, plots_dir, dpi=dpi, save_type=save_type)
 
     print(f"Stage 6 done: plots written to {plots_dir}")
-    return plots_dir
+    return counts, distances, coloc
 
 
 def main(argv: Optional[List[str]] = None) -> int:
