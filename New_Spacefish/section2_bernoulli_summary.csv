@@ -1,0 +1,4 @@
+condition,K,n_cells,largest_state_pct
+all cells (with reads),7,9472,21.1
+endothelial (all cells),7,7388,23.7
+fibroblast (all cells),3,732,69.3

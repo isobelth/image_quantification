@@ -1,0 +1,4 @@
+condition,K,deviance_explained_2comp,factor1_share,factor2_share
+all cells (with reads),7,0.378,0.52,0.436
+endothelial (all cells),7,0.349,0.557,0.395
+fibroblast (all cells),3,0.581,0.556,0.429
