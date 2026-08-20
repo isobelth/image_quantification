@@ -1,9 +1,0 @@
-cell_type,hier_cluster,n_states,n_cells,main_states
-endothelial,4,287,4913,"13.4% in 1 (CDH5); 5.3% in 1_4 (CDH5, KDR); 5.2% in 1_7 (CDH5, VEGFA); 3.8% in 1_4_7 (CDH5, KDR, VEGFA); 3.6% in 4_7 (KDR, VEGFA)"
-endothelial,5,11,576,"80.0% in 4 (KDR); 12.0% in 4_5 (KDR, VWF); 3.1% in 4_10 (KDR, SEMA3F); 2.1% in 4_5_13 (KDR, VWF, PDGFB); 0.7% in 4_5_10 (KDR, VWF, SEMA3F)"
-endothelial,2,17,386,"58.0% in 5 (VWF); 12.2% in 5_7 (VWF, VEGFA); 9.1% in 5_6 (VWF, PECAM1); 3.4% in 5_10 (VWF, SEMA3F); 3.1% in 5_13 (VWF, PDGFB)"
-endothelial,3,5,225,"51.6% in 6 (PECAM1); 41.3% in 4_6 (KDR, PECAM1); 3.1% in 6_18 (PECAM1, ICAM1); 2.7% in 4_6_10 (KDR, PECAM1, SEMA3F); 1.3% in 4_6_15 (KDR, PECAM1, APLN)"
-endothelial,1,8,73,"42.5% in 12 (FLT1); 17.8% in 7_12 (VEGFA, FLT1); 9.6% in 7_8_12 (VEGFA, DLL4, FLT1); 8.2% in 8_12 (DLL4, FLT1); 6.8% in 2_8_12 (MMP1, DLL4, FLT1)"
-fibroblast,3,27,486,"21.2% in 3_14 (COL1A1, COL1A2); 16.3% in 3 (COL1A1); 15.6% in 3_7 (COL1A1, VEGFA); 11.3% in 3_7_14 (COL1A1, VEGFA, COL1A2); 5.3% in 3_11_14 (COL1A1, JAG1, COL1A2)"
-fibroblast,2,8,150,"50.7% in 14 (COL1A2); 32.0% in 7_14 (VEGFA, COL1A2); 6.7% in 11_14 (JAG1, COL1A2); 3.3% in 14_17 (COL1A2, ANGPT2); 2.7% in 7_11_14 (VEGFA, JAG1, COL1A2)"
-fibroblast,1,5,49,"53.1% in 16 (PDGFRB); 22.4% in 7_16 (VEGFA, PDGFRB); 10.2% in 1_16 (CDH5, PDGFRB); 8.2% in 4_16 (KDR, PDGFRB); 6.1% in 7_14_16 (VEGFA, COL1A2, PDGFRB)"
