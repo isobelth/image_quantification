@@ -39,4 +39,5 @@
 !**/README_images/**/*.jpeg
 
 # Local model binaries
-New_Spacefish/cellpose_model
+**/cellpose_model
+**/Example_Custom_Cellpose_Model
