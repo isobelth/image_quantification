@@ -95,6 +95,8 @@ VALID_ANALYSES = {
     "proliferation",
     "mitochondria",
     "membrane_upregulation",
+    "nuclear_protein_localisation",
+    "protein_subcellular_localisation",
 }
 
 _UNSET = object()  # sentinel for "use instance default"
@@ -1584,6 +1586,178 @@ class AcinarImage:
 
         return df
 
+    def nuclear_protein_localisation(self):
+        """Per-nucleus protein intensity and radial position within the acinus.
+
+        Requires ``nuclear_mask_path`` and ``protein_channel``. Nuclei are
+        watershed-segmented from the supplied nuclear mask; each is measured
+        for total/mean protein signal and its normalised distance from the
+        acinus exterior (0 = boundary, 1 = deepest interior).
+        """
+        if self.nuclear_mask_path is None:
+            raise ValueError(
+                "nuclear_protein_localisation requires 'nuclear_mask_path' to be set."
+            )
+        if self.protein_channel is None:
+            raise ValueError(
+                "nuclear_protein_localisation requires 'protein_channel' to be set."
+            )
+
+        acinus_mask, px, flag, _thresh, _sol = self._get_acinus_mask()
+
+        protein_rescaled = self._rescale_volume(self.image[:, self.protein_channel, :, :])
+        rescaled_nuc = self._load_mask_rescaled(self.nuclear_mask_path) * acinus_mask
+
+        # --- Segment nuclei via watershed (same approach as cell_nuclear_shape) ---
+        cleaned_nuc = gaussian(rescaled_nuc, 0.8)
+        thresh = threshold_otsu(cleaned_nuc)
+        cleaned_nuc = cleaned_nuc > thresh
+        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=1000)
+
+        distances = ndi.distance_transform_edt(erosion(cleaned_nuc, ball(3)))
+        coords = peak_local_max(distances, min_distance=max(1, int(4 / px)))
+        markers = np.zeros(cleaned_nuc.shape, dtype=np.uint32)
+        idx = tuple(np.round(coords).astype(int).T)
+        markers[idx] = np.arange(len(coords)) + 1
+        markers = dilation(markers, ball(2))
+        seg_nuc = watershed(-distances, markers, mask=cleaned_nuc)
+        seg_nuc = clear_border(seg_nuc)
+
+        # Filter small nuclei
+        props = regionprops_table(seg_nuc, properties=("label", "area"))
+        vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
+        keep = props["area"] >= vol_thresh
+        seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
+
+        acinus_regions = regionprops(acinus_mask)
+        acinus_vol = acinus_regions[0].area * px ** 3 if acinus_regions else np.nan
+
+        # Normalised distance from acinus exterior (0 = boundary, 1 = interior)
+        distance = ndi.distance_transform_edt(acinus_mask > 0)
+        if distance.max() > distance.min():
+            distance_norm = np.interp(distance, (distance.min(), distance.max()), (0, 1))
+        else:
+            distance_norm = distance
+
+        nuclei_props = pd.DataFrame(
+            regionprops_table(seg_nuc, properties=("label", "area", "centroid"))
+        )
+
+        if nuclei_props.empty:
+            df = pd.DataFrame({
+                "nucleus_label": [np.nan], "centroid-0": [np.nan],
+                "centroid-1": [np.nan], "centroid-2": [np.nan],
+                "nuclear_volume_um3": [np.nan], "nuclear_protein_intensity": [np.nan],
+                "av_nuclear_protein_intensity": [np.nan],
+                "corresponding_distance_matrix": [np.nan],
+                "acinus_volume_um3": [acinus_vol], "number_of_nuclei": [0],
+                "flag": [flag],
+            })
+        else:
+            df = nuclei_props.rename(columns={"label": "nucleus_label"})
+            df["nuclear_volume_um3"] = df["area"] * px ** 3
+            df["nuclear_protein_intensity"] = df["nucleus_label"].apply(
+                lambda lbl: float(protein_rescaled[seg_nuc == lbl].sum())
+            )
+            df["av_nuclear_protein_intensity"] = (
+                df["nuclear_protein_intensity"] / df["nuclear_volume_um3"]
+            )
+            df["corresponding_distance_matrix"] = df.apply(
+                lambda x: distance_norm[
+                    int(round(x["centroid-0"])),
+                    int(round(x["centroid-1"])),
+                    int(round(x["centroid-2"])),
+                ],
+                axis=1,
+            )
+            df["acinus_volume_um3"] = acinus_vol
+            df["number_of_nuclei"] = len(df)
+            df.drop(columns="area", inplace=True)
+            df["flag"] = flag
+
+        self._save_qc("nuclear_protein_localisation", [
+            (self._mid_z(seg_nuc), "Nuclei labels"),
+        ], red_channel=self.protein_channel)
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["nuclei_labels"] = seg_nuc
+            self.volumes["protein"] = protein_rescaled
+
+        return df
+
+    def protein_subcellular_localisation(self):
+        """Fraction of protein signal in the membrane, nucleus, and cytoplasm.
+
+        Requires ``nuclear_mask_path``, ``membrane_mask_path`` and
+        ``protein_channel``. The acinus is split into three compartments
+        (membrane, nucleus, cytoplasm = acinus - membrane - nucleus) and the
+        fraction of total protein signal in each is reported per image.
+        """
+        if self.nuclear_mask_path is None or self.membrane_mask_path is None:
+            raise ValueError(
+                "protein_subcellular_localisation requires both 'nuclear_mask_path' "
+                "and 'membrane_mask_path' to be set."
+            )
+        if self.protein_channel is None:
+            raise ValueError(
+                "protein_subcellular_localisation requires 'protein_channel' to be set."
+            )
+
+        acinus_mask, px, flag, _thresh, _sol = self._get_acinus_mask()
+        acinus_bool = acinus_mask > 0
+
+        protein_rescaled = self._rescale_volume(self.image[:, self.protein_channel, :, :])
+        rescaled_nuc = self._load_mask_rescaled(self.nuclear_mask_path) * acinus_bool
+        rescaled_mem = self._load_mask_rescaled(self.membrane_mask_path) * acinus_bool
+
+        # Membrane: light smoothing to bridge gaps, then threshold
+        cleaned_mem = gaussian(rescaled_mem, sigma=0.5)
+        cleaned_mem = cleaned_mem > threshold_otsu(cleaned_mem)
+
+        # Nuclei: threshold, clean, and exclude any membrane overlap
+        cleaned_nuc = rescaled_nuc > threshold_otsu(rescaled_nuc)
+        cleaned_nuc = remove_small_objects(cleaned_nuc, min_size=60)
+        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=60)
+        cleaned_nuc = cleaned_nuc & ~cleaned_mem
+
+        # Cytoplasm = acinus - membrane - nucleus
+        cleaned_cyto = acinus_bool & ~cleaned_mem & ~cleaned_nuc
+
+        poi_membrane = float(protein_rescaled[cleaned_mem].sum())
+        poi_nuclei = float(protein_rescaled[cleaned_nuc].sum())
+        poi_cyto = float(protein_rescaled[cleaned_cyto].sum())
+        poi_total = poi_membrane + poi_nuclei + poi_cyto
+
+        if poi_total > 0:
+            nuclear_fraction = poi_nuclei / poi_total
+            membrane_fraction = poi_membrane / poi_total
+            cyto_fraction = poi_cyto / poi_total
+        else:
+            nuclear_fraction = membrane_fraction = cyto_fraction = np.nan
+
+        df = pd.DataFrame([{
+            "nuclear_fraction": nuclear_fraction,
+            "membrane_fraction": membrane_fraction,
+            "cyto_fraction": cyto_fraction,
+            "total": nuclear_fraction + membrane_fraction + cyto_fraction,
+            "flag": flag,
+        }])
+
+        self._save_qc("protein_subcellular_localisation", [
+            (self._mid_z(cleaned_nuc.astype(np.uint8)), "Nucleus"),
+            (self._mid_z(cleaned_cyto.astype(np.uint8)), "Cytoplasm"),
+            (self._mid_z(cleaned_mem.astype(np.uint8)), "Membrane"),
+        ], red_channel=self.protein_channel)
+
+        if self.return_volumes:
+            self.volumes["acinus_mask"] = acinus_mask
+            self.volumes["nucleus_mask"] = cleaned_nuc
+            self.volumes["cyto_mask"] = cleaned_cyto
+            self.volumes["membrane_mask"] = cleaned_mem
+
+        return df
+
     # =====================================================================
     #  Run multiple analyses at once
     # =====================================================================
@@ -1597,7 +1771,8 @@ class AcinarImage:
         analyses : list of str
             Choose from: ``"acinus_shape"``, ``"cell_nuclear_shape"``,
             ``"protein_polarisation"``, ``"apoptosis"``, ``"protein_proximity"``,
-            ``"proliferation"``, ``"mitochondria"``.
+            ``"proliferation"``, ``"mitochondria"``, ``"membrane_upregulation"``,
+            ``"nuclear_protein_localisation"``, ``"protein_subcellular_localisation"``.
         **kwargs
             Analysis-specific overrides (e.g. ``search_radius_um``,
             ``c3_separation_um``).  Only kwargs matching each method's

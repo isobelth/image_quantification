@@ -75,6 +75,16 @@ _REQUIREMENTS: Dict[str, dict] = {
         "channels": ["membrane_channel"],
         "label": "Membrane Upregulation",
     },
+    "nuclear_protein_localisation": {
+        "folders": ["nuclear_mask_dir"],
+        "channels": ["protein_channel"],
+        "label": "Nuclear Protein Localisation",
+    },
+    "protein_subcellular_localisation": {
+        "folders": ["nuclear_mask_dir", "membrane_mask_dir"],
+        "channels": ["protein_channel"],
+        "label": "Protein Subcellular Localisation",
+    },
 }
 
 _FOLDER_LABELS = {
@@ -148,6 +158,8 @@ class AcinarAnalysisGUI:
             proliferation={"label": "Proliferation (EdU)", "value": False},
             mitochondria={"label": "Mitochondria", "value": False},
             membrane_upregulation={"label": "Membrane Upregulation", "value": False},
+            nuclear_protein_localisation={"label": "Nuclear Protein Localisation", "value": False},
+            protein_subcellular_localisation={"label": "Protein Subcellular Localisation", "value": False},
             save_qc_plots={"label": "Save QC Plots", "value": True},
             call_button=False,
         )
@@ -227,6 +239,8 @@ class AcinarAnalysisGUI:
         proliferation: bool = False,
         mitochondria: bool = False,
         membrane_upregulation: bool = False,
+        nuclear_protein_localisation: bool = False,
+        protein_subcellular_localisation: bool = False,
         save_qc_plots: bool = True,
     ):
         return None
