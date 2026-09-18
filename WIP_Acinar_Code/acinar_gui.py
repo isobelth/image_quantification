@@ -3,6 +3,12 @@ Acinar Analysis GUI
 ===================
 Standalone magicgui GUI for batch 3-D acinar image analysis.
 
+This module is a thin front-end over ``acinar_analysis.batch_analyse``. It
+only collects and validates settings; all image processing happens in
+``acinar_analysis``. The GUI intentionally closes *before* analysis starts
+so that tqdm progress bars print cleanly to the terminal/notebook instead of
+being hidden behind the Qt window.
+
 Launch from a notebook (run ``%gui qt`` first)::
 
     %gui qt
@@ -13,10 +19,11 @@ Or standalone::
 
     python acinar_gui.py
 
-The GUI collects all settings (folders, channels, analyses) and validates
-them.  When the user clicks "Run Analysis" the window closes and
-``batch_analyse`` runs directly — with full tqdm progress visible in
-the terminal/notebook.
+Workflow:
+1. User picks folders, sets channel indices, and ticks the analyses to run.
+2. Clicking "Run Analysis" validates the settings (see ``_validate``).
+3. On success the config is stored, the window closes, and
+   ``batch_analyse`` is called with that config.
 """
 
 import sys
@@ -33,6 +40,10 @@ from acinar_analysis import batch_analyse
 # ---------------------------------------------------------------------------
 #  Per-analysis requirements
 # ---------------------------------------------------------------------------
+# Maps each analysis name to the mask folders and channels it needs. Used both
+# to build the welcome text and to validate the user's selection before running.
+# Keys must match the analysis method names in ``acinar_analysis`` and the
+# checkbox names in the analysis panel below.
 
 _REQUIREMENTS: Dict[str, dict] = {
     "acinus_shape": {
@@ -87,6 +98,8 @@ _REQUIREMENTS: Dict[str, dict] = {
     },
 }
 
+# Human-readable labels for folders and channels, used in validation messages
+# and the welcome/requirements text so error output matches the GUI wording.
 _FOLDER_LABELS = {
     "nuclear_mask_dir": "Nuclear Mask Folder",
     "membrane_mask_dir": "Membrane Mask Folder",
@@ -118,10 +131,13 @@ class AcinarAnalysisGUI:
 
     def __init__(self):
         self._results: Optional[Dict[str, pd.DataFrame]] = None
-        self._config: Optional[dict] = None  # filled on Run click
-        self._closed = False
+        self._config: Optional[dict] = None  # validated settings, filled on Run click
+        self._closed = False  # True once the window is closed (via Run or the X button)
 
         # ---- Build magicgui panels ----
+        # Each panel wraps a no-op "stub" function purely to render input widgets;
+        # the stubs never run (call_button=False). Values are read back in
+        # ``_read_folders`` / ``_read_channels`` when the user clicks Run.
 
         self.folder_panel = magicgui(
             self._folder_stub,
@@ -166,7 +182,8 @@ class AcinarAnalysisGUI:
 
         self._btn_run = magicgui(self._on_run_clicked, call_button="Run Analysis")
 
-        # Build welcome / requirements text
+        # Build welcome / requirements text: one line per analysis listing the
+        # folders and channels it needs, so the user knows what to provide.
         welcome = "Select folders, set channels, tick analyses, click Run.\n"
         welcome += "The window will close and analysis will run with progress in the terminal.\n\n"
         for info in _REQUIREMENTS.values():
@@ -201,6 +218,7 @@ class AcinarAnalysisGUI:
         self.widget.native.setMinimumWidth(520)
 
         # Ensure _closed is set if the user closes the window via X button
+        # (otherwise ``launch_and_run``'s wait loop would never exit).
         _self = self
         _orig_close = self.widget.native.closeEvent
         def _on_native_close(event):
@@ -209,6 +227,7 @@ class AcinarAnalysisGUI:
                 _orig_close(event)
         self.widget.native.closeEvent = _on_native_close
 
+        # Report the .tif count whenever the image folder changes, as a sanity check.
         self.folder_panel.image_dir.changed.connect(self._on_image_dir_changed)
 
         self.widget.show()
@@ -216,6 +235,8 @@ class AcinarAnalysisGUI:
     # ------------------------------------------------------------------
     #  Stub functions (no call_button → panels are purely config)
     # ------------------------------------------------------------------
+    # These exist only so magicgui can infer widgets from their signatures.
+    # They are never called; the defaults set each widget's initial value.
 
     @staticmethod
     def _folder_stub(
@@ -268,6 +289,7 @@ class AcinarAnalysisGUI:
 
     @staticmethod
     def _dir_or_none(path_value) -> Optional[str]:
+        # Returns the path string only if it points to a real directory, else None.
         p = Path(str(path_value))
         if str(p) in (".", "") or not p.is_dir():
             return None
@@ -275,6 +297,7 @@ class AcinarAnalysisGUI:
 
     @staticmethod
     def _file_or_none(path_value) -> Optional[str]:
+        # Returns the path string only if it points to a real file, else None.
         p = Path(str(path_value))
         if str(p) in (".", "") or not p.is_file():
             return None
@@ -282,6 +305,7 @@ class AcinarAnalysisGUI:
 
     @staticmethod
     def _channel_or_none(value: int) -> Optional[int]:
+        # GUI uses -1 to mean "channel not present"; convert that to None.
         return value if value >= 0 else None
 
     def _read_folders(self) -> Dict[str, Optional[str]]:
@@ -307,6 +331,7 @@ class AcinarAnalysisGUI:
         return [n for n in _REQUIREMENTS if getattr(self.analysis_panel, n).value]
 
     def _validate(self, analyses, folders, channels) -> List[str]:
+        # Returns a list of human-readable problems; empty list means all good.
         errors: List[str] = []
         if not analyses:
             errors.append("No analyses selected.")
@@ -324,7 +349,8 @@ class AcinarAnalysisGUI:
                 if channels.get(ckey) is None:
                     errors.append(f"'{reqs['label']}' requires {_CHANNEL_LABELS[ckey]} (>= 0).")
 
-        # Check that mask directories have the same number of files as images
+        # Each mask folder must have one .tif per image (matched alphabetically
+        # downstream), so a count mismatch is caught early here.
         image_dir = folders.get("image_dir")
         if image_dir is not None:
             n_images = len(list(Path(image_dir).rglob("*.tif")))
@@ -371,11 +397,13 @@ class AcinarAnalysisGUI:
                 self._log(f"  [ERROR] {e}")
             return
 
-        # Store the validated configuration
+        # Derive output paths from the chosen directory, then drop output_dir
+        # so ``folders`` only holds inputs passed straight to batch_analyse.
         output_dir = folders.pop("output_dir")
         output_csv = str(Path(output_dir) / "acinar_results.csv")
         qc_dir = str(Path(output_dir) / "qc_plots") if self.analysis_panel.save_qc_plots.value else None
 
+        # Assemble the kwargs for batch_analyse. Unset folders/channels are None.
         self._config = {
             "image_dir": folders["image_dir"],
             "analyses": analyses,
@@ -483,7 +511,8 @@ def launch_and_run():
 
     gui = AcinarAnalysisGUI()
 
-    # Process events until the GUI is closed
+    # Block until the user clicks Run or closes the window, pumping Qt events
+    # by hand so this works from a plain script as well as a %gui qt notebook.
     while not gui._closed:
         app.processEvents()
         time.sleep(0.05)  # prevent CPU spinning / re-entrancy
