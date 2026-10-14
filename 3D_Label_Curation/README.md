@@ -1,15 +1,3 @@
-# Label Generation Steps
-PLEASE HELP WITH STEP 4 OF THIS PLAN!
-1. Gather paired brightfield + fluorescent images
-   - If you have more paired images, please let me know!
-3. Use a deep learning model and sparse labelling to create a mask. Stack the images into a 3-channel stack:
-   - Channel 0: Brightfield, Channel 1: Fluorescence, Channel 2: Mask
-   - Images saved in `Z:\Bel\IMAGES_FOR_VASCUMAP_RETRAINING\fluorescent_cells_tifs\3_channel_images_to_curate`
-4. Use the GUI in this repository to curate the masks 
-5. (Hopefully!) use the brightfield and curated masks to train a deep learning model to segment vasculature directly from the brightfield images
-
-<img src="README_images/label_curation_1.png" width="80%" />
-
 # How to Use This Code
 
 1. If you've ever used the permeability/placenta code, you already have VS code and the relevant environment installed, so you can skip ahead to step 7
