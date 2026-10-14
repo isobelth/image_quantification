@@ -26,18 +26,18 @@ PLEASE HELP WITH STEP 4 OF THIS PLAN!
 9. Press the `Run All` button at the top of the file. The GUI should open in a new window
     
 # How to Use The GUI
-1. Select a file here and press `Load image`. 
+1. Select a file here. Don't press `Load image` yet! Update the channels below: usually label channel = 4, BF=0, fluo = 1. Once you've updated the channels, press `Load image`.
 2. Updates/error/success messages print here. You can see when the image has been loaded or when any operations have been completed. An autosave operation happens every few minutes in the background so you don't lose your progress. 
    - A separate mask file is generated and only that one is saved. When you press "final save", the original mask is overwritten. If you have any issues (eg powercut) and you want to make sure your progress has been saved, speak to Bel! Hopefully I've thought of every possible catch to ensure no progress is lost.
 3. The 3 image channels are shown on the bottom left. When you select the mask you can:
     - Change the opacity
-    - Select and edit the mask using the eraser or paintbrush (these only work when the mask visibility (eye) is toggled on). If you change `n edit dim` to 3 you are altering all slices simultaneously (not advised!)
-    - All vessels should have label = 1. You can change colour to aid visibility by pressing the button with two curved arrows
-    - You can select whole regions to label as 1 (mask) or 0 (background) by using the polygon tool.
+    - Select and edit the mask using the eraser (toggle on using e) or paintbrush (toggle on using p; these only work when the mask visibility (eye) is toggled on). If you change `n edit dim` to 3 you are altering all slices simultaneously (not advised!)
+    - All vessels should have label = 1. You can change colour to aid visibility by pressing the button with two curved arrows. We find pink works best.
     - You can change the brush/eraser size by holding down Alt and moving your mouse right (larger) or left (smaller)
  4. With the brightfield/fluorescence layer selected (blue) you can change the layer contrast limits (like brightness and contrast in FIJI), colour, or gamma (brings out brights/darks depending on direction)
  5. You can toggle between 2D and 3D by pressing the square/cube button, or change the viewing axis by pressing the third and fourth buttons. Press Home to reset the view
  6. Scroll through the slices using this slider, or hold Ctrl+mouse wheel. To zoom in/out, use the mouse wheel, and hold down space and drag to move. Ctrl + Z undoes any action.
+ 7. NEW FEATURE: You can work on a single region at once, rather than the whole image. Just change `Operation scope` to "selected region".
 
  I've added in a few functions to make the labelling more painless:
  7. `REPLACE SLICES`
